@@ -1,0 +1,437 @@
+---
+url: https://mintlify.com/docs/optimize/seo
+canonical: https://www.mintlify.com/docs/optimize/seo
+title: "SEO - Mintlify"
+description: "Optimize SEO with meta tag configuration for better search visibility."
+generator: Mintlify
+type: website
+---
+
+[Skip to main content](#content-area)
+
+[Mintlify home page![light logo](https://mintcdn.com/mintlify/e0-N9JebsJpsinlD/logo/light.svg?fit=max&auto=format&n=e0-N9JebsJpsinlD&q=85&s=b0900d78fd30c5583e438ce3f2591f94)![dark logo](https://mintcdn.com/mintlify/e0-N9JebsJpsinlD/logo/dark.svg?fit=max&auto=format&n=e0-N9JebsJpsinlD&q=85&s=b42419758ebac281070d7ed579c40075)](https://mintlify.com/docs)
+
+[Documentation](https://www.mintlify.com/docs)[Guides](https://www.mintlify.com/docs/guides)[API reference](https://www.mintlify.com/docs/api/introduction)[Changelog](https://www.mintlify.com/docs/changelog)
+
+Search...
+
+Navigation
+
+Optimize
+
+SEO
+
+Search...
+
+⌘K
+
+##### Get started
+
+- [Introduction](https://www.mintlify.com/docs)
+- [Quickstart](https://www.mintlify.com/docs/quickstart)
+- [AI-native](https://www.mintlify.com/docs/ai-native)
+- [Migration guide](https://www.mintlify.com/docs/migration)
+
+##### Organize
+
+- [Global settings](https://www.mintlify.com/docs/organize/settings)
+- [Navigation](https://www.mintlify.com/docs/organize/navigation)
+- [Pages](https://www.mintlify.com/docs/organize/pages)
+- [Hidden pages](https://www.mintlify.com/docs/organize/hidden-pages)
+- [Exclude files](https://www.mintlify.com/docs/organize/mintignore)
+
+##### Customize
+
+- [Custom domain](https://www.mintlify.com/docs/customize/custom-domain)
+- [Themes](https://www.mintlify.com/docs/customize/themes)
+- [Fonts](https://www.mintlify.com/docs/customize/fonts)
+- [Custom scripts](https://www.mintlify.com/docs/customize/custom-scripts)
+- [React](https://www.mintlify.com/docs/customize/react-components)
+- [Custom 404 page](https://www.mintlify.com/docs/customize/custom-404-page)
+
+##### Create content
+
+- Web editor
+
+- [Install the CLI](https://www.mintlify.com/docs/installation)
+- [Format text](https://www.mintlify.com/docs/create/text)
+- [Format code](https://www.mintlify.com/docs/create/code)
+- Agent
+
+- Components
+
+- [Images and embeds](https://www.mintlify.com/docs/create/image-embeds)
+- [Files](https://www.mintlify.com/docs/create/files)
+- [Lists and tables](https://www.mintlify.com/docs/create/list-table)
+- [Reusable snippets](https://www.mintlify.com/docs/create/reusable-snippets)
+- [Personalized content](https://www.mintlify.com/docs/create/personalization)
+- [Redirects](https://www.mintlify.com/docs/create/redirects)
+- [Changelogs](https://www.mintlify.com/docs/create/changelogs)
+
+##### Document APIs
+
+- [Playground](https://www.mintlify.com/docs/api-playground/overview)
+- [OpenAPI setup](https://www.mintlify.com/docs/api-playground/openapi-setup)
+- [Complex data types](https://www.mintlify.com/docs/api-playground/complex-data-types)
+- [Add SDK examples](https://www.mintlify.com/docs/api-playground/adding-sdk-examples)
+- [Manage page visibility](https://www.mintlify.com/docs/api-playground/managing-page-visibility)
+- [Multiple responses](https://www.mintlify.com/docs/api-playground/multiple-responses)
+- [Create manual API pages](https://www.mintlify.com/docs/api-playground/mdx-setup)
+- [AsyncAPI setup](https://www.mintlify.com/docs/api-playground/asyncapi-setup)
+- [Troubleshooting](https://www.mintlify.com/docs/api-playground/troubleshooting)
+
+##### Deploy
+
+- [Deployments](https://www.mintlify.com/docs/deploy/deployments)
+- [Preview deployments](https://www.mintlify.com/docs/deploy/preview-deployments)
+- /docs subpath
+
+- [Authentication setup](https://www.mintlify.com/docs/deploy/authentication-setup)
+- Dashboard access
+
+- [Monorepo setup](https://www.mintlify.com/docs/deploy/monorepo)
+- [External proxies with Vercel](https://www.mintlify.com/docs/deploy/vercel-external-proxies)
+- [CI checks](https://www.mintlify.com/docs/deploy/ci)
+- [GitHub](https://www.mintlify.com/docs/deploy/github)
+- [GitHub Enterprise Server](https://www.mintlify.com/docs/deploy/ghes)
+- [GitLab](https://www.mintlify.com/docs/deploy/gitlab)
+
+##### Optimize
+
+- [Assistant](https://www.mintlify.com/docs/ai/assistant)
+- [Discord bot](https://www.mintlify.com/docs/ai/discord)
+- [Slack bot](https://www.mintlify.com/docs/ai/slack-bot)
+- [Contextual menu](https://www.mintlify.com/docs/ai/contextual-menu)
+- [Analytics](https://www.mintlify.com/docs/optimize/analytics)
+- [Feedback](https://www.mintlify.com/docs/optimize/feedback)
+- [llms.txt](https://www.mintlify.com/docs/ai/llmstxt)
+- [skill.md](https://www.mintlify.com/docs/ai/skillmd)
+- [Model Context Protocol](https://www.mintlify.com/docs/ai/model-context-protocol)
+- [SEO](https://www.mintlify.com/docs/optimize/seo)
+- [Markdown export](https://www.mintlify.com/docs/ai/markdown-export)
+- [PDF exports](https://www.mintlify.com/docs/optimize/pdf-exports)
+- Integrations
+
+
+![US](https://d3gk2c5xim1je2.cloudfront.net/flags/US.svg)
+
+English
+
+Mintlify automatically handles many SEO best practices, including:
+
+- Meta tag generation
+- Sitemap and `robots.txt` file generation
+- Semantic HTML structure
+- Mobile optimization
+
+You can fully customize your site’s meta tags by adding the `metatags` field to your `docs.json` or a page’s frontmatter.
+
+##
+
+[​](#automatically-generated-meta-tags)
+
+Automatically generated meta tags
+
+Mintlify generates the following meta tags for every page. You can override these meta tags by specifying them in your `docs.json` or a page’s frontmatter. **Basic metadata:**
+
+- `charset: utf-8` - Character encoding
+- `og:type: website` - Open Graph type
+- `og:site_name` - Your documentation site name
+- `twitter:card: summary_large_image` - Twitter card type
+
+**Page-specific metadata:**
+
+- `title` - Page title, formatted as “Page Title - Site Name”
+- `og:title` - Open Graph title, same as page title
+- `twitter:title` - Twitter title, same as page title
+- `description` - Page description
+- `og:description` - Open Graph description, same as page description
+- `twitter:description` - Twitter description, same as page description
+
+**URL and canonical:**
+
+- `canonical` - Automatically built from page URL
+- `og:url` - Set to canonical URL
+
+**SEO and indexing:**
+
+- `robots` - Generated from page metadata
+- `noindex` - Generated from page metadata
+- `keywords` - Generated from page metadata
+
+**Images:**
+
+- `og:image` - Open Graph image, `og:image:width` set to 1200 and `og:image:height` 630
+- `twitter:image` - Twitter image, `twitter:image:width` set to 1200 and `twitter:image:height` 630
+
+**Browser and app metadata:**
+
+- `applicationName` - Your documentation site name
+- `generator: Mintlify` - Identifies the site generator as Mintlify
+- `apple-mobile-web-app-title` - iOS home screen app name
+- `msapplication-TileColor` - Windows tile color
+- Favicons and icons from your config
+- Sitemap reference link
+
+Any meta tags in your `docs.json` `seo.metatags` configuration are also automatically injected into every page, such as `google-site-verification` for search console validation.
+
+##
+
+[​](#global-meta-tags)
+
+Global meta tags
+
+To set default meta tags for all pages, add the `metatags` field to your `docs.json`.
+```
+"seo": {
+    "metatags": {
+        "og:image": "link to your default meta tag image"
+    }
+}
+```
+
+###
+
+[​](#set-a-canonical-url)
+
+Set a canonical URL
+
+If you’re using a custom domain, set the `canonical` meta tag to ensure search engines index your preferred domain. A canonical URL tells search engines which version of your documentation is the primary one. This improves SEO when your documentation is accessible from multiple URLs and prevents issues with duplicate content.
+```
+"seo": {
+    "metatags": {
+        "canonical": "https://www.your-custom-domain-here.com"
+    }
+}
+```
+
+##
+
+[​](#page-specific-meta-tags)
+
+Page-specific meta tags
+
+To set page-specific meta tags, add them to a page’s frontmatter. Page-specific meta tags include:
+
+- `title` - Page title
+- `description` - Page description appears below the title on the page and in some search engine results
+- `keywords` - Comma-separated keywords
+- `og:title` - Open Graph title for social sharing
+- `og:description` - Open Graph description
+- `og:image` - Open Graph image URL
+- `og:url` - Open Graph URL
+- `og:type` - Open Graph type like “article” or “website”
+- `og:image:width` - Open Graph image width
+- `og:image:height` - Open Graph image height
+- `twitter:title` - Twitter card title
+- `twitter:description` - Twitter card description
+- `twitter:image` - Twitter card image
+- `twitter:card` - Twitter card type like `summary` or `summary_large_image`
+- `twitter:site` - Twitter site handle
+- `twitter:image:width` - Twitter image width
+- `twitter:image:height` - Twitter image height
+- `noindex` - Set to `true` to prevent search engine indexing
+- `robots` - Robots meta tag value
+```
+---
+title: "Your example page title"
+description: "Page-specific description"
+"og:image": "link to your meta tag image"
+"og:title": "Social media title"
+keywords: ["keyword1", "keyword2"]
+---
+```
+You must wrap meta tags with colons in quotes. For example, `og:title: "Social media title"`.You must format the `keywords` field as a YAML array. For example, `keywords: ["keyword1", "keyword2", "keyword3"]`.
+
+##
+
+[​](#common-meta-tags-reference)
+
+Common meta tags reference
+
+Below is a comprehensive list of meta tags you can add to your `docs.json`. These meta tags help improve your site’s SEO, social sharing, and browser compatibility.
+
+The `og:image` adds a background image that Mintlify automatically overlays with your logo, page title, and description when generating social media previews.
+
+You can preview how your meta tags appear on different platforms using [metatags.io](https://metatags.io/).
+```
+"seo": {
+    "metatags": {
+      "robots": "noindex",
+      "charset": "UTF-8",
+      "viewport": "width=device-width, initial-scale=1.0",
+      "description": "Page description",
+      "keywords": "keyword1, keyword2, keyword3",
+      "author": "Author Name",
+      "robots": "index, follow",
+      "googlebot": "index, follow",
+      "google": "notranslate",
+      "google-site-verification": "verification_token",
+      "generator": "Mintlify",
+      "theme-color": "#000000",
+      "color-scheme": "light dark",
+      "canonical": "https://your-custom-domain-here.com",
+      "format-detection": "telephone=no",
+      "referrer": "origin",
+      "refresh": "30",
+      "rating": "general",
+      "revisit-after": "7 days",
+      "language": "en",
+      "copyright": "Copyright 2024",
+      "reply-to": "email@example.com",
+      "distribution": "global",
+      "coverage": "Worldwide",
+      "category": "Technology",
+      "target": "all",
+      "HandheldFriendly": "True",
+      "MobileOptimized": "320",
+      "apple-mobile-web-app-capable": "yes",
+      "apple-mobile-web-app-status-bar-style": "black",
+      "apple-mobile-web-app-title": "App Title",
+      "application-name": "App Name",
+      "msapplication-TileColor": "#000000",
+      "msapplication-TileImage": "path/to/tile.png",
+      "msapplication-config": "path/to/browserconfig.xml",
+      "og:title": "Open Graph Title",
+      "og:type": "website",
+      "og:url": "https://example.com",
+      "og:image": "https://example.com/image.jpg",
+      "og:description": "Open Graph Description",
+      "og:site_name": "Site Name",
+      "og:locale": "en_US",
+      "og:video": "https://example.com/video.mp4",
+      "og:audio": "https://example.com/audio.mp3",
+      "twitter:card": "summary",
+      "twitter:site": "@username",
+      "twitter:creator": "@username",
+      "twitter:title": "Twitter Title",
+      "twitter:description": "Twitter Description",
+      "twitter:image": "https://example.com/image.jpg",
+      "twitter:image:alt": "Image Description",
+      "twitter:player": "https://example.com/player",
+      "twitter:player:width": "480",
+      "twitter:player:height": "480",
+      "twitter:app:name:iphone": "App Name",
+      "twitter:app:id:iphone": "12345",
+      "twitter:app:url:iphone": "app://",
+      "article:published_time": "2024-01-01T00:00:00+00:00",
+      "article:modified_time": "2024-01-02T00:00:00+00:00",
+      "article:expiration_time": "2024-12-31T00:00:00+00:00",
+      "article:author": "Author Name",
+      "article:section": "Technology",
+      "article:tag": "tag1, tag2, tag3",
+      "book:author": "Author Name",
+      "book:isbn": "1234567890",
+      "book:release_date": "2024-01-01",
+      "book:tag": "tag1, tag2, tag3",
+      "profile:first_name": "John",
+      "profile:last_name": "Doe",
+      "profile:username": "johndoe",
+      "profile:gender": "male",
+      "music:duration": "205",
+      "music:album": "Album Name",
+      "music:album:disc": "1",
+      "music:album:track": "1",
+      "music:musician": "Artist Name",
+      "music:song": "Song Name",
+      "music:song:disc": "1",
+      "music:song:track": "1",
+      "video:actor": "Actor Name",
+      "video:actor:role": "Role Name",
+      "video:director": "Director Name",
+      "video:writer": "Writer Name",
+      "video:duration": "120",
+      "video:release_date": "2024-01-01",
+      "video:tag": "tag1, tag2, tag3",
+      "video:series": "Series Name"
+  }
+}
+```
+See all 91 lines
+
+##
+
+[​](#sitemaps-and-robots-txt-files)
+
+Sitemaps and robots.txt files
+
+Mintlify automatically generates a `sitemap.xml` file and a `robots.txt` file. You can view your sitemap by appending `/sitemap.xml` to your documentation site’s URL. Only pages included in your `docs.json` are included by default. To include hidden links, add `seo.indexing` to your `docs.json`:
+```
+"seo": {
+    "indexing": "all"
+}
+```
+
+###
+
+[​](#custom-sitemaps-and-robots-txt-files)
+
+Custom sitemaps and robots.txt files
+
+To add a custom `sitemap.xml` or `robots.txt` file, create a `sitemap.xml` or `robots.txt` file at the root of your project. Adding a custom file overrides the automatically generated file of the same name. If you delete a custom file, the default file automatically applies again.
+
+##
+
+[​](#disable-indexing)
+
+Disable indexing
+
+To prevent search engines from indexing a page, add `noindex: true` to the [frontmatter](https://www.mintlify.com/docs/organize/pages) of the page.
+```
+---
+noindex: true
+---
+```
+Pages with `hidden: true` in their frontmatter are automatically treated as `noindex`. See [Hidden pages](https://www.mintlify.com/docs/organize/hidden-pages) for details.
+
+You can also specify `noindex` for all pages in your docs by setting the `metatags.robots` field to `"noindex"` in your `docs.json`:
+```
+"seo": {
+    "metatags": {
+      "robots": "noindex"
+    }
+  }
+```
+
+##
+
+[​](#seo-best-practices)
+
+SEO best practices
+
+Write descriptive titles and descriptions
+
+- Use clear, descriptive page titles (50-60 characters)
+- Write compelling descriptions (150-160 characters)
+- Include relevant keywords
+- Make each page title and description unique
+
+Optimize your content structure
+
+- Use proper heading hierarchy (H1 → H2 → H3)
+- Write for humans first, search engines second
+- Include relevant keywords in headings and content
+- Keep URLs short, descriptive, and organized hierarchically
+- Break up long content with subheadings and lists
+
+Internal linking strategy
+
+- Link to related pages within your documentation
+- Use descriptive anchor text instead of “click here”
+- Create topic clusters by linking related concepts
+- Use the automatic cross-referencing features
+
+Image SEO
+
+- Use descriptive file names for images
+- Always include alt text for accessibility and SEO
+- Optimize image file sizes for faster loading
+- Use relevant images that support your content
+
+Was this page helpful?
+
+YesNo
+
+[Model Context ProtocolPrevious](https://www.mintlify.com/docs/ai/model-context-protocol)[Markdown exportNext](https://www.mintlify.com/docs/ai/markdown-export)
+
+⌘I

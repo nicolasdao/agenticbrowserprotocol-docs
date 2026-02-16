@@ -1,0 +1,195 @@
+---
+url: https://mintlify.com/docs/dashboard/audit-logs
+canonical: https://www.mintlify.com/docs/dashboard/audit-logs
+title: "Audit logs - Mintlify"
+description: "Review the actions that members of your organization perform."
+generator: Mintlify
+type: website
+---
+
+[Skip to main content](#content-area)
+
+[Mintlify home page![light logo](https://mintcdn.com/mintlify/e0-N9JebsJpsinlD/logo/light.svg?fit=max&auto=format&n=e0-N9JebsJpsinlD&q=85&s=b0900d78fd30c5583e438ce3f2591f94)![dark logo](https://mintcdn.com/mintlify/e0-N9JebsJpsinlD/logo/dark.svg?fit=max&auto=format&n=e0-N9JebsJpsinlD&q=85&s=b42419758ebac281070d7ed579c40075)](https://mintlify.com/docs)
+
+[Documentation](https://www.mintlify.com/docs)[Guides](https://www.mintlify.com/docs/guides)[API reference](https://www.mintlify.com/docs/api/introduction)[Changelog](https://www.mintlify.com/docs/changelog)
+
+Search...
+
+Navigation
+
+Dashboard access
+
+Audit logs
+
+Search...
+
+⌘K
+
+##### Get started
+
+- [Introduction](https://www.mintlify.com/docs)
+- [Quickstart](https://www.mintlify.com/docs/quickstart)
+- [AI-native](https://www.mintlify.com/docs/ai-native)
+- [Migration guide](https://www.mintlify.com/docs/migration)
+
+##### Organize
+
+- [Global settings](https://www.mintlify.com/docs/organize/settings)
+- [Navigation](https://www.mintlify.com/docs/organize/navigation)
+- [Pages](https://www.mintlify.com/docs/organize/pages)
+- [Hidden pages](https://www.mintlify.com/docs/organize/hidden-pages)
+- [Exclude files](https://www.mintlify.com/docs/organize/mintignore)
+
+##### Customize
+
+- [Custom domain](https://www.mintlify.com/docs/customize/custom-domain)
+- [Themes](https://www.mintlify.com/docs/customize/themes)
+- [Fonts](https://www.mintlify.com/docs/customize/fonts)
+- [Custom scripts](https://www.mintlify.com/docs/customize/custom-scripts)
+- [React](https://www.mintlify.com/docs/customize/react-components)
+- [Custom 404 page](https://www.mintlify.com/docs/customize/custom-404-page)
+
+##### Create content
+
+- Web editor
+
+- [Install the CLI](https://www.mintlify.com/docs/installation)
+- [Format text](https://www.mintlify.com/docs/create/text)
+- [Format code](https://www.mintlify.com/docs/create/code)
+- Agent
+
+- Components
+
+- [Images and embeds](https://www.mintlify.com/docs/create/image-embeds)
+- [Files](https://www.mintlify.com/docs/create/files)
+- [Lists and tables](https://www.mintlify.com/docs/create/list-table)
+- [Reusable snippets](https://www.mintlify.com/docs/create/reusable-snippets)
+- [Personalized content](https://www.mintlify.com/docs/create/personalization)
+- [Redirects](https://www.mintlify.com/docs/create/redirects)
+- [Changelogs](https://www.mintlify.com/docs/create/changelogs)
+
+##### Document APIs
+
+- [Playground](https://www.mintlify.com/docs/api-playground/overview)
+- [OpenAPI setup](https://www.mintlify.com/docs/api-playground/openapi-setup)
+- [Complex data types](https://www.mintlify.com/docs/api-playground/complex-data-types)
+- [Add SDK examples](https://www.mintlify.com/docs/api-playground/adding-sdk-examples)
+- [Manage page visibility](https://www.mintlify.com/docs/api-playground/managing-page-visibility)
+- [Multiple responses](https://www.mintlify.com/docs/api-playground/multiple-responses)
+- [Create manual API pages](https://www.mintlify.com/docs/api-playground/mdx-setup)
+- [AsyncAPI setup](https://www.mintlify.com/docs/api-playground/asyncapi-setup)
+- [Troubleshooting](https://www.mintlify.com/docs/api-playground/troubleshooting)
+
+##### Deploy
+
+- [Deployments](https://www.mintlify.com/docs/deploy/deployments)
+- [Preview deployments](https://www.mintlify.com/docs/deploy/preview-deployments)
+- /docs subpath
+
+- [Authentication setup](https://www.mintlify.com/docs/deploy/authentication-setup)
+- Dashboard access
+
+    -   [Single sign-on (SSO)](https://www.mintlify.com/docs/dashboard/sso)
+    -   [Deployment permissions](https://www.mintlify.com/docs/dashboard/permissions)
+    -   [Roles](https://www.mintlify.com/docs/dashboard/roles)
+    -   [Audit logs](https://www.mintlify.com/docs/dashboard/audit-logs)
+    -   [Security contact](https://www.mintlify.com/docs/dashboard/security-contact)
+- [Monorepo setup](https://www.mintlify.com/docs/deploy/monorepo)
+- [External proxies with Vercel](https://www.mintlify.com/docs/deploy/vercel-external-proxies)
+- [CI checks](https://www.mintlify.com/docs/deploy/ci)
+- [GitHub](https://www.mintlify.com/docs/deploy/github)
+- [GitHub Enterprise Server](https://www.mintlify.com/docs/deploy/ghes)
+- [GitLab](https://www.mintlify.com/docs/deploy/gitlab)
+
+##### Optimize
+
+- [Assistant](https://www.mintlify.com/docs/ai/assistant)
+- [Discord bot](https://www.mintlify.com/docs/ai/discord)
+- [Slack bot](https://www.mintlify.com/docs/ai/slack-bot)
+- [Contextual menu](https://www.mintlify.com/docs/ai/contextual-menu)
+- [Analytics](https://www.mintlify.com/docs/optimize/analytics)
+- [Feedback](https://www.mintlify.com/docs/optimize/feedback)
+- [llms.txt](https://www.mintlify.com/docs/ai/llmstxt)
+- [skill.md](https://www.mintlify.com/docs/ai/skillmd)
+- [Model Context Protocol](https://www.mintlify.com/docs/ai/model-context-protocol)
+- [SEO](https://www.mintlify.com/docs/optimize/seo)
+- [Markdown export](https://www.mintlify.com/docs/ai/markdown-export)
+- [PDF exports](https://www.mintlify.com/docs/optimize/pdf-exports)
+- Integrations
+
+
+![US](https://d3gk2c5xim1je2.cloudfront.net/flags/US.svg)
+
+English
+
+Audit logs are available on [Enterprise plans](https://mintlify.com/pricing?ref=audit-logs).
+
+Use audit logs to monitor and track actions performed by members of your organization. Audit logs provide a record of activities for security, compliance, and troubleshooting purposes.
+
+- **Monitor security**: Track authentication attempts and permission changes.
+- **Ensure compliance**: Maintain records of all organizational activities.
+- **Troubleshoot issues**: Investigate failed actions and their causes.
+- **Track changes**: Review who made specific changes and when.
+
+##
+
+[​](#view-audit-logs)
+
+View audit logs
+
+Go to the [Audit log](https://dashboard.mintlify.com/settings/organization/audit-logs) page of your dashboard to view audit logs. Click on any log entry to expand it and view detailed information, including:
+
+| Field | Description |
+| --- | --- |
+| Timestamp | Date and time when the action occurred |
+| Actor | Email address of the user who performed the action |
+| Action | What action the user performed |
+| Category | Type of resource affected |
+| Outcome | Whether the action succeeded or failed |
+| Metadata | Additional context about the action |
+
+###
+
+[​](#filter-logs)
+
+Filter logs
+
+Filter audit logs to find specific activities. **Date range**: Select a preset date range to view logs over a specific period. **Category**: Filter logs by the type of action.
+
+| Category | Description |
+| --- | --- |
+| Organization | Organization settings updates and deletion requests. |
+| Member | Team member invitations, removals, and role changes. |
+| Deployment | Deployment configuration changes including custom domains, authentication, and Git sources. |
+| Preview deployment | Preview deployment creation, updates, and authentication changes. |
+| API key | API key and discovery API key creation and deletion. |
+| Assistant | Assistant setting updates like deflection email, web search sites, and starter questions. |
+| PDF export | PDF export generation and deletion. |
+| Integration | GitHub, Slack, and Discord installations and removals. |
+| Billing | Subscription updates, add-on purchases, and invoice views. |
+| Quota | Overage policy and alert configuration changes. |
+| User | Individual user notification settings. |
+| Suggestions | Suggestion configurations and repository management. |
+| Audit log | Audit log views and exports. |
+| Auth | Login attempts, logouts, and session creations. |
+
+##
+
+[​](#export-audit-logs)
+
+Export audit logs
+
+Export audit logs to CSV for analysis, compliance reporting, or long-term archival.
+
+1.  Navigate to the [Audit log](https://dashboard.mintlify.com/settings/organization/audit-logs) page of your dashboard.
+2.  Optionally, apply filters to narrow down the logs you want to export.
+3.  Click **Export CSV**.
+4.  Mintlify sends you an email with a download link when the export is ready.
+
+Was this page helpful?
+
+YesNo
+
+[RolesPrevious](https://www.mintlify.com/docs/dashboard/roles)[Security contactNext](https://www.mintlify.com/docs/dashboard/security-contact)
+
+⌘I

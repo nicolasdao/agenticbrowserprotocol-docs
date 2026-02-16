@@ -1,0 +1,354 @@
+---
+url: https://mintlify.com/docs/guides/content-templates
+canonical: https://www.mintlify.com/docs/guides/content-templates
+title: "Content templates - Mintlify"
+description: "Copy and modify these templates to quickly create documentation for different content types."
+generator: Mintlify
+type: website
+---
+
+[Skip to main content](#content-area)
+
+[Mintlify home page![light logo](https://mintcdn.com/mintlify/e0-N9JebsJpsinlD/logo/light.svg?fit=max&auto=format&n=e0-N9JebsJpsinlD&q=85&s=b0900d78fd30c5583e438ce3f2591f94)![dark logo](https://mintcdn.com/mintlify/e0-N9JebsJpsinlD/logo/dark.svg?fit=max&auto=format&n=e0-N9JebsJpsinlD&q=85&s=b42419758ebac281070d7ed579c40075)](https://mintlify.com/docs)
+
+[Documentation](https://www.mintlify.com/docs)[Guides](https://www.mintlify.com/docs/guides)[API reference](https://www.mintlify.com/docs/api/introduction)[Changelog](https://www.mintlify.com/docs/changelog)
+
+Search...
+
+Navigation
+
+Best practices
+
+Content templates
+
+Search...
+
+⌘K
+
+##### Overview
+
+- [Guides](https://www.mintlify.com/docs/guides)
+
+##### AI
+
+- [Automate documentation updates](https://www.mintlify.com/docs/guides/automate-agent)
+- [Build an in-app assistant](https://www.mintlify.com/docs/guides/assistant-embed)
+- [Claude Code](https://www.mintlify.com/docs/guides/claude-code)
+- [Cursor](https://www.mintlify.com/docs/guides/cursor)
+- [GEO](https://www.mintlify.com/docs/guides/geo)
+- [Windsurf](https://www.mintlify.com/docs/guides/windsurf)
+
+##### API docs
+
+- [Migrate from MDX to OAS](https://www.mintlify.com/docs/guides/migrating-from-mdx)
+
+##### Best practices
+
+- [Accessibility](https://www.mintlify.com/docs/guides/accessibility)
+- [Content types](https://www.mintlify.com/docs/guides/content-types)
+- [Content templates](https://www.mintlify.com/docs/guides/content-templates)
+- [Improve your docs](https://www.mintlify.com/docs/guides/improving-docs)
+- [Internationalization](https://www.mintlify.com/docs/guides/internationalization)
+- [Linking](https://www.mintlify.com/docs/guides/linking)
+- [Maintenance](https://www.mintlify.com/docs/guides/maintenance)
+- [Media](https://www.mintlify.com/docs/guides/media)
+- [Organize navigation](https://www.mintlify.com/docs/guides/navigation)
+- [SEO](https://www.mintlify.com/docs/guides/seo)
+- [Style and tone](https://www.mintlify.com/docs/guides/style-and-tone)
+- [Understand your audience](https://www.mintlify.com/docs/guides/understand-your-audience)
+
+##### Git
+
+- [Git concepts for documentation](https://www.mintlify.com/docs/guides/git-concepts)
+- [Work with branches](https://www.mintlify.com/docs/guides/branches)
+
+##### Use cases
+
+- [Developer documentation](https://www.mintlify.com/docs/guides/developer-documentation)
+- [Knowledge base](https://www.mintlify.com/docs/guides/knowledge-base)
+- [Support center](https://www.mintlify.com/docs/guides/support-center)
+
+![US](https://d3gk2c5xim1je2.cloudfront.net/flags/US.svg)
+
+English
+
+Use these templates as starting points for creating documentation. Customize the templates for your documentation and your audience.
+
+1.  Copy the template that matches your content type.
+2.  Replace placeholders and example content with your actual content.
+3.  Adjust sections as needed.
+4.  Remove any sections that don’t apply.
+
+Not sure which template to use? Read about [content types](https://www.mintlify.com/docs/guides/content-types) to understand when to use each one.
+
+##
+
+[​](#how-to-guide-template)
+
+How-to guide template
+
+Use how-to guides when users need to accomplish a specific task and already have some familiarity with your product. How-tos are goal-driven and get straight to the solution.
+
+How-to guide template
+````
+---
+title: "[Titles should start with a verb]"
+description: "[Do specific task] to [achieve outcome]."
+---
+
+Start with a brief statement of what this guide helps users accomplish.
+
+## Prerequisites (optional)
+
+List only what's necessary:
+
+- Required setup or configuration
+- Permissions needed
+- Related features that should be configured first
+
+## [Action-oriented heading describing the task]
+
+Provide direct instructions focused on achieving the goal.
+
+1. Open [location] and navigate to [specific place]
+2. Click [button or option]
+3. Enter [required information]
+4. Click [confirmation button]
+```language
+// Include code examples that users can copy and modify
+```
+<Tip>
+  Include practical tips that help users avoid common mistakes or work more efficiently.
+</Tip>
+
+## Verify the result (optional)
+
+If success is ambiguous, explain how users can confirm they completed the task successfully.
+
+## Troubleshooting (optional)
+
+Address common issues users might encounter:
+
+- **Problem description**: Solution or workaround
+- **Another common issue**: How to resolve it
+
+## Related tasks
+
+Link to related how-to guides or next steps.
+````
+
+##
+
+[​](#tutorial-template)
+
+Tutorial template
+
+Use tutorials when you want to help new users learn through hands-on practice. Tutorials guide users step-by-step through a complete learning experience with a clear outcome.
+
+Tutorial template
+````
+---
+title: "[Action verb] [specific outcome]"
+description: "Learn how to [specific outcome] by [method or approach]."
+---
+
+Use an introduction paragraph to explain what users will learn and what they'll be able to do after completing this tutorial.
+
+## Prerequisites
+
+List what users need before starting:
+
+- Required knowledge or skills
+- Tools, accounts, or permissions
+- Time commitment (optional)
+
+## Step 1: [First action]
+
+Provide clear, specific instructions for the first step.
+```language
+// Include code examples where helpful
+```
+Explain what this step accomplishes and why it matters.
+
+## Step 2: [Second action]
+
+Continue with sequential steps that build on previous work.
+
+Point out milestones and progress markers so users know they're on track.
+
+## Step 3: [Third action]
+
+Keep steps focused on concrete actions rather than theory.
+
+Minimize choices that users need to make.
+
+## Next steps
+
+Summarize what users learned and suggest logical next steps:
+
+- Related tutorials to try
+- How-to guides for common tasks
+- Additional resources for deeper learning
+````
+
+##
+
+[​](#explanation-template)
+
+Explanation template
+
+Use explanations when users need to understand concepts, design decisions, or how complex features work. Explanations provide context and deepen understanding rather than giving step-by-step instructions.
+
+Explanation template
+```
+---
+title: "About [concept or feature]"
+description: "Understand [concept] and how it works within [product or context]."
+---
+
+Start with a clear statement of what this explanation covers and why understanding it matters.
+
+Define the concept in plain language. Explain what it is, what it does, and why it exists.
+
+Use analogies or comparisons to familiar concepts when helpful.
+
+## How [concept] works
+
+Explain the underlying mechanics, architecture, or process.
+
+<Frame>
+  <img src="/path/to/diagram.png" alt="Diagram showing how [concept] works" />
+</Frame>
+
+Break down complex ideas into digestible sections.
+
+## Why [design decision or approach]
+
+Provide context about why things work the way they do.
+
+Discuss trade-offs, alternatives that were considered, or constraints that influenced the design.
+
+## When to use [concept]
+
+Help users understand when this concept or approach is most appropriate.
+
+- **Use case 1**: When this approach makes sense
+- **Use case 2**: Another scenario where this is the right choice
+- **Not recommended for**: Situations where alternatives are better
+
+## Relationship to other features
+
+Draw connections to related concepts or features in your product.
+
+Explain how this concept fits into the broader system or workflow.
+
+## Common misconceptions
+
+Address misunderstandings or clarify subtle distinctions.
+
+## Further reading
+
+Link to related explanations, tutorials, or reference documentation.
+```
+
+##
+
+[​](#reference-template)
+
+Reference template
+
+Use reference documentation when users need to look up specific details about your product’s functionality. Reference docs prioritize accuracy, consistency, and scannability.
+
+Reference template
+````
+---
+title: "[Feature or API name] reference"
+description: "Complete reference for [feature or API] properties, parameters, and options."
+---
+
+Provide a one-sentence description of what this feature or API does.
+
+## Properties
+
+<ParamField body="property1" type="string" required>
+  Brief description of the property.
+</ParamField>
+
+<ParamField body="property2" type="number">
+  Brief description with default value if applicable.
+</ParamField>
+
+<ParamField body="property3" type="boolean" default="false">
+  Brief description.
+</ParamField>
+
+## Parameters
+
+<ParamField body="parameterName" type="string">
+  Description of what this parameter does and when to use it.
+```language
+// Example showing typical usage
+```
+</ParamField>
+
+<ParamField body="anotherParameter" type="object">
+  Description of the parameter.
+
+  Available options:
+
+  - `option1`: Description of this option.
+  - `option2`: Description of this option.
+</ParamField>
+
+## Examples
+
+### Basic example
+```language title="Basic usage"
+// Minimal example showing common use case
+```
+
+### Advanced example
+```language title="Advanced configuration"
+// Example with multiple options configured
+```
+
+## Response
+
+If documenting an API, describe the response structure.
+
+<ResponseField name="field1" type="string" required>
+  Description of the response field.
+</ResponseField>
+
+<ResponseField name="field2" type="number">
+  Description of another response field.
+</ResponseField>
+
+Example response:
+```json
+{
+  "field1": "value",
+  "field2": 123
+}
+```
+
+## Related references
+
+Link to related reference documentation.
+````
+
+##
+
+[​](#related-pages)
+
+Related pages
+
+[Content typesChoose the right content type for your documentation goals.](https://www.mintlify.com/docs/guides/content-types)[Style and toneWrite effective documentation with consistent style.](https://www.mintlify.com/docs/guides/style-and-tone)[Format textLearn how to format text and style content.](https://www.mintlify.com/docs/create/text)
+
+Was this page helpful?
+
+YesNo
+
+[Content typesPrevious](https://www.mintlify.com/docs/guides/content-types)[Improve your docsNext](https://www.mintlify.com/docs/guides/improving-docs)
+
+⌘I
