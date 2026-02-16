@@ -1,0 +1,1469 @@
+---
+title: "Implementation Guide"
+description: "Self-contained guide for implementing ABP on web applications"
+icon: "list-check"
+---
+
+**The single document you need to correctly implement ABP on an existing web app.**
+
+This is a **process document**, not a reference. It walks you through analyzing your app's features and implementing ABP correctly, step by step.
+
+<Note>
+**Chrome extension developers:** If you're adding ABP to a Chrome extension, see the **[Chrome Extension Guide](/guides/chrome-extensions)**. That guide requires reading Sections 1, 7, and 8 of this document first (core principles), then covers the extension-specific mechanics.
+</Note>
+
+<Warning>
+**Do NOT skip to implementation.** The most common failure mode is jumping straight to code without analyzing how your app's existing features work. The steps below exist because real implementations have failed without them.
+</Warning>
+
+---
+
+## 1. The Critical Rule
+
+> **Every capability call MUST produce a complete, usable result for a program controlling the browser, with no human present.**
+
+The consumer of your capabilities is a **program** -- an AI agent or automated client -- not a person sitting in front of a browser. When an agent calls `export.pdf`, it expects a PDF. It cannot:
+
+- Click buttons in a print dialog
+- Dismiss alert boxes
+- Interact with permission prompts
+- Find files in a download bar
+
+### The Headless Test
+
+Before shipping any capability, ask:
+
+> *"Would this produce a complete, usable result for a program controlling the browser, with no human present?"*
+
+This accounts for the transport layer's capabilities:
+
+- `window.print()` + status message `"Print dialog opened"` -- **Fails** (expects human to use print dialog)
+- `window.print()` as transport signal (with content prepared in print container) -- **Passes** (bridge intercepts, generates PDF)
+- `alert("Export complete!")` -- **Fails** (page hangs waiting for human to click OK)
+- Return `{ success: true, data: { ... } }` -- **Passes** (agent receives data directly)
+- `<a download>.click()` -- **Fails** (browser download bar, agent can't access file)
+- Return file as BinaryData in response -- **Passes** (agent receives file data inline)
+
+### The Transport Layer as Collaborator
+
+The "fully programmatic" rule does not mean every capability must accomplish everything within the page's JavaScript alone. ABP apps run inside a browser controlled by a **transport layer** -- typically Puppeteer or Playwright via an ABP client. That transport layer has capabilities of its own:
+
+| Transport Capability | What It Does |
+|---------------------|--------------|
+| Client-side PDF rendering | Client takes HTML, generates a vector PDF using the browser's native engine -- selectable text, proper fonts, accurate CSS |
+| `page.screenshot()` | Captures the page or element as an image |
+
+**The correct mental model: the app produces content; the agent handles delivery.**
+
+This is the same pattern across all delivery mechanisms. The app returns content (HTML, text, data), and the agent uses the appropriate tool for delivery -- `pbcopy` for clipboard, a client-provided tool for PDF, file write for downloads.
+
+### Why This Matters: A Real Failure
+
+A web application had a "Save as PDF" feature. The existing feature worked by:
+1. Extracting the relevant content from the page
+2. Opening a new window with styled HTML
+3. Calling `printWindow.print()` on that isolated window
+
+An AI agent implementing ABP for this app just called `window.print()` on the **main page**, capturing the full app UI (toolbar, sidebar, navigation, content panes) instead of the isolated content. The agent's `export.pdf` capability returned:
+
+```javascript
+{
+  success: true,
+  data: { status: 'print_dialog_opened', message: 'Print dialog opened.' }
+}
+```
+
+**Two failures:**
+1. The agent never analyzed how the existing PDF feature worked -- it didn't extract the content-isolation logic
+2. The response contained zero bytes of PDF -- just a status message
+
+The agent needed to **study the existing feature** to understand that the app isolates content before printing. This is why Step 1 below exists.
+
+### The Delivery vs. Content Production Principle
+
+> **Browsers have many features designed to deliver content to humans: print dialogs, download bars, the clipboard, and share sheets. These are *delivery mechanisms*. An ABP capability must never use a delivery mechanism as its output path. Produce the content; return it to the agent; let the agent or host handle delivery.**
+
+Every delivery mechanism involves two phases:
+
+1. **Content production** -- generating the data (rendering HTML, converting formats, assembling a file)
+2. **Delivery** -- routing the data to a destination (print dialog, download bar, clipboard, share sheet)
+
+ABP capabilities do phase 1. The agent controls phase 2.
+
+| Browser API | What It Does for Humans | Why Agents Can't Use It | ABP Alternative |
+|-------------|------------------------|------------------------|-----------------|
+| `window.print()` | Opens a print/save-as-PDF dialog | Agent can't interact with the dialog | Return HTML content; the agent or client generates the PDF. (Advanced: `window.print()` as transport signal for app-specific rendering -- see [Section 6](#6-the-pdfprint-pattern)) |
+| `<a download>.click()` / blob URL navigation | Triggers browser download bar | Agent can't access files in the download bar | Return file data as BinaryData in the response |
+| `navigator.clipboard.*` | Copies to the system clipboard | Clipboard is a host-side concern -- even with auto-granted permissions, writing to a *browser's* clipboard is useless to an agent in a separate process | Expose the content-producing capability (e.g., `convert.markdownToHtml`); agent uses host tools (`pbcopy`, `xclip`, `clip`) |
+| `navigator.share()` | Opens native share dialog | Agent can't select a share target in the dialog | Return shareable data (URL, text, title) in the response; agent routes as needed |
+| `showSaveFilePicker()` / `showOpenFilePicker()` | Opens OS file-save or file-open dialog | Agent can't navigate the OS file dialog or choose a path | For saving: return file data in the response; agent writes to disk. For loading: accept file content as an input parameter |
+| `new Notification()` / `Notification.requestPermission()` | Displays an OS notification | Agent can't see or dismiss OS notifications; permission prompt blocks | Return notification-worthy data in the response; agent decides how to surface it |
+
+#### How to Recognize a Delivery Mechanism
+
+The table above is not a closed list. New browser APIs appear regularly, and any of them could be a delivery mechanism in disguise. Apply this three-question test to any browser API you plan to use inside a capability handler:
+
+1. **Does the API route content to a destination outside the page?** Clipboard, share sheets, download bars, and notifications all move data out of the page and into an OS-level surface. If yes, the agent -- not the page -- should control where that content goes.
+2. **Does the API open a native OS dialog the page can't fully control?** Print dialogs, file pickers, permission prompts, and share sheets all produce UI that JavaScript cannot dismiss or interact with. If yes, an automated caller will hang or fail silently.
+3. **Would the agent normally decide where this content goes?** Agents choose file paths, clipboard targets, notification channels, and share destinations. If the API makes that choice for them (or forces a human to make it), it's a delivery mechanism.
+
+If the answer to **any** of these is yes, the API is a delivery mechanism. Your capability should produce the content and return it; the agent handles routing.
+
+**Mental model:** The examples above are not a closed list -- any browser API that triggers OS-level UI or routes content outside the page is suspect. When you encounter one, ask: *"Is the agent the one who should decide where this content goes?"* If yes -- and it almost always is -- your capability should produce the content, not deliver it.
+
+<Warning>
+**Shared delivery mechanisms can hide different content.** When multiple features use the same delivery mechanism (e.g., two features both copy to clipboard, or two features both trigger downloads), don't assume they produce the same content. Strip the delivery step from each feature independently, then compare the content-production code paths. If they differ, your ABP capabilities must preserve both paths -- either as separate capabilities or as a parameter on a shared capability.
+</Warning>
+
+<Note>
+**PDF gets its own section** ([Section 6](#6-the-pdfprint-pattern)) because the agent has multiple approaches available -- from the simple default (app returns HTML, agent/client generates a PDF) to advanced patterns for app-specific rendering needs. Clipboard, downloads, and share are covered in [Section 7](#7-forbidden-patterns).
+</Note>
+
+### The Input-Side Mirror
+
+The delivery-vs-content-production principle has a mirror on the **input side**. Browsers have APIs that acquire data *from* the user -- file pickers (`<input type="file">`, `showOpenFilePicker()`), camera/microphone prompts (`getUserMedia()`), and drag-and-drop -- all of which assume a human is present to select a file, grant a permission, or drag an item. An ABP capability that relies on these for input will hang or fail when called by an agent.
+
+The fix mirrors the output side: **accept input data as parameters**. Instead of opening a file picker, accept the file content (or a URL) as a parameter. Instead of prompting for camera access to capture a photo, accept image data as a parameter. The one exception is capabilities that genuinely need **live hardware access** -- camera, microphone, sensors -- where the data cannot be supplied in advance. For those, declare the requirement in the manifest (see [Permission-Gated Capabilities](#permission-gated-capabilities-declaring-requirements)) and handle denial gracefully with a `PERMISSION_DENIED` error code.
+
+### The Self-Containment Principle
+
+> **Every capability must be a self-contained, stateless operation.** It receives input parameters, does its work, and produces output -- all in a single call. It must NEVER depend on the agent calling other capabilities first to "set up" the right state.
+
+When a human uses a web app, the workflow is stateful:
+1. Enter or load data into the app
+2. App processes and displays the result
+3. Click "Export" or "Save as PDF"
+
+It's tempting to mirror this as ABP capabilities: `state.setContent` -> `export.pdf`. **This is wrong.** If `export.pdf` accepts a `content` parameter, it must handle everything internally:
+
+```javascript
+// Wrong: Depends on previous state.setContent call
+async _exportPdf() {
+  // Exports whatever the page is currently showing
+  window.print();
+  return { success: true, data: { rendered: true } };
+}
+
+// Correct: Self-contained -- uses the input parameter
+async _exportPdf({ content, contentType = 'html' }) {
+  // Process content if needed (e.g., convert raw data to HTML)
+  const html = contentType === 'html' ? content : renderToHtml(content);
+
+  // Render the INPUT PARAMETER into print container
+  const container = document.getElementById('print-container');
+  container.innerHTML = html;
+
+  window.print();
+  return { success: true, data: { rendered: true } };
+}
+```
+
+**Why self-containment matters:**
+- Agents may call capabilities in any order
+- An agent calling `export.pdf` with content should get a PDF of *that content*, regardless of what the app is currently displaying
+- If capabilities depend on each other, the agent must understand implicit state -- and that breaks when the page reloads, when multiple agents connect, or when calls are made in unexpected order
+
+### A Real-World Failure From Missing Self-Containment
+
+An invoicing application exposed these capabilities:
+- `state.loadInvoice` -- Load an invoice into the editor
+- `ui.switchView` -- Switch between dashboard and editor views
+- `export.pdf` -- Export as PDF
+
+An agent tried to export an invoice as PDF:
+1. Called `state.loadInvoice` with invoice data -> app displayed the invoice in its editor
+2. Called `export.pdf` with the same data -> PDF contained the **entire app UI** (dashboard sidebar, toolbar, editor pane)
+
+The `export.pdf` handler called `window.print()` on the **current page** instead of rendering the invoice data into an isolated print container. The ~316KB PDF was a screenshot of the web app interface, not a clean invoice document.
+
+Had `export.pdf` been self-contained -- taking the invoice data as a parameter, rendering it into a print container, and calling `window.print()` -- the agent would have received a clean PDF regardless of whether `state.loadInvoice` was called first.
+
+---
+
+## 2. Step 1 -- Inventory Your Features
+
+Before writing any ABP code, create a **feature inventory**.
+
+<Note>
+**For AI agents implementing ABP:** This step means **reading the app's source code**. Open the files. Find the functions behind each button. Trace the code path from click handler to output. Do NOT write ABP capability handlers from your imagination or from general knowledge of how such features "typically" work -- your handlers must replicate what the app actually does.
+</Note>
+
+For each feature your app offers, document:
+
+1. **What it does** (user-facing description)
+2. **How it works technically** -- Read the source code. Find the function. What does it call? What DOM elements does it create or modify? What browser APIs does it use?
+3. **What the output is** (text, file, side effect, UI change)
+
+### Feature Inventory Template
+
+Here's what a completed inventory looks like. Note how the "Technical Implementation" column captures the actual code path -- this is what your ABP handlers must replicate.
+
+**Example: Invoice Generator app**
+
+| Feature | User Action | Technical Implementation | Output Type |
+|---------|-------------|------------------------|-------------|
+| Generate invoice | Fill form, click "Generate" | Calls `renderInvoice(data)` -> produces styled HTML, displays in preview | HTML in DOM |
+| Save as PDF | Click "Export PDF" | Opens new window, injects invoice HTML with print styles, calls `newWindow.print()` | PDF via print dialog |
+| Export HTML | Click "Download HTML" | Wraps invoice HTML in full document template, triggers download via `<a download>` | HTML file download |
+| Share invoice link | Click "Share Link" | Calls `generateShareUrl(invoiceId)` -> returns signed URL | URL string |
+
+### Why This Step Matters
+
+The technical implementation column is where most failures originate. If you don't understand how "Save as PDF" works in your app, you'll implement the ABP capability incorrectly.
+
+**The #1 mistake AI agents make:** They see a feature name like "Save as PDF" or "Export Image", assume they know how it works, and write an ABP handler from scratch. But the app's actual feature might isolate content into a new window, apply custom styles, use a specific library, or process data through a rendering pipeline. The agent's handler skips all of this and produces wrong output. **Read the code first. Always.**
+
+**How to analyze each feature:**
+
+1. Find the button or UI trigger for the feature
+2. Read its click handler or event listener
+3. Follow the function calls -- what does it invoke?
+4. Note what DOM manipulation it does (creates elements, opens windows, modifies containers)
+5. Note what browser APIs it calls (`window.print()`, `canvas.toDataURL()`, `document.createElement('a')`, `fetch()`, etc.)
+6. Note what libraries it uses (`jsPDF`, `html2canvas`, `Chart.js`, `marked`, `Prism`, `SheetJS`, etc.)
+
+**Common technical patterns to look for:**
+
+- Does the feature open a new window or iframe? -> You need to extract that content-preparation logic
+- Does it call `window.print()`? -> On what element/page? The main page or isolated content?
+- Does it trigger a download? -> You need to return the data in the ABP response instead
+- Does it use `alert()`/`confirm()`? -> You need ABP elicitation instead
+- Does it use a library? -> Your ABP handler should use the same library
+- Does it use `navigator.clipboard` or `navigator.share()`? -> These are delivery mechanisms. Expose the content-producing step as the ABP capability and skip the delivery step
+
+---
+
+## 3. Step 2 -- Map Features to ABP Capabilities
+
+### Standard Namespaces
+
+ABP uses dot-notation namespaces. Use these standard namespaces when your feature fits:
+
+| Namespace | Purpose | Examples |
+|-----------|---------|----------|
+| `export.*` | File/document export | `export.pdf`, `export.html`, `export.image` |
+| `convert.*` | Format conversion | `convert.markdownToHtml`, `convert.htmlToMarkdown` |
+| `render.*` | Rendering operations | `render.html`, `render.svg` |
+| `generate.*` | Content generation | `generate.thumbnail`, `generate.preview` |
+| `storage.*` | Browser storage | `storage.read`, `storage.write` |
+| `ai.*` | AI-powered operations | `ai.summarize`, `ai.translate` |
+
+Use `camelCase` for multi-word names: `convert.markdownToHtml`, not `convert.markdown-to-html`.
+
+For vendor-specific features, use reverse-domain notation: `com.mycompany.customFeature`.
+
+### What NOT to Expose as Capabilities
+
+Not every app feature should become an ABP capability. The purpose of ABP is to give agents access to **data operations** (convert, export, read, write) -- not to let agents drive your UI.
+
+**Do NOT expose:**
+
+| Anti-Pattern | Why It's Wrong | What to Do Instead |
+|-------------|---------------|-------------------|
+| `ui.navigate`, `ui.switchView` | UI navigation -- agents don't need to click buttons or switch tabs | Make data capabilities work regardless of which view the UI is showing |
+| `ui.setDisplayMode`, `ui.togglePanel` | Changes what the human sees -- irrelevant to programmatic consumers | If it affects output (e.g., light/dark theme), make it a parameter on the relevant capability |
+| `state.setContent` (when `export.*` already accepts content) | Unnecessary setup step -- breaks self-containment | Data-producing capabilities should accept content as an input parameter |
+| `state.setOption` (when the option is already a parameter on capabilities) | Redundant -- duplicates parameters that already exist on data capabilities | Use the parameter on the relevant capability directly |
+| `clipboard.write`, `share.invoke` | Delivery mechanisms -- the agent handles delivery on the host side | Expose the content-producing capability (e.g., `convert.markdownToHtml`); agent uses `pbcopy`/`xclip` for clipboard |
+
+**The test:** For each candidate capability, ask: *"Can the agent accomplish its task without this capability, by passing the right parameters to data-producing capabilities?"* If yes, don't expose it.
+
+**Valid `state.*` capabilities:** Reading app state can be legitimate when the agent needs to discover what's available (e.g., checking what documents are loaded, what configuration is active). But writing state (`state.set*`) is almost always a smell -- it means your data capabilities aren't self-contained.
+
+### 5-Step Capability Mapping Process
+
+For each feature in your inventory:
+
+**Step A -- Name it.** Choose a capability name from the standard namespaces above. Examples: "Export as PDF" -> `export.pdf`. "Convert CSV to JSON" -> `convert.csvToJson`. "Generate thumbnail" -> `generate.thumbnail`.
+
+**Step B -- Define inputs.** What parameters does the agent need to provide? Look at what your existing feature's code takes as input. If your export function is `generateReport(data, options)`, your inputs are `data` (object, required) and `options` (object, optional).
+
+**Step C -- Define outputs.** What should the agent receive back? This must be **actual data**, not a status message. If the capability is `convert.csvToJson`, the output is the JSON data. If it's `convert.markdownToHtml`, the output is `{ html }`. For PDF, prefer returning HTML content and letting the agent or client handle PDF generation -- see [Section 6](#6-the-pdfprint-pattern).
+
+**Step D -- Identify the code path.** Open the source files. Read the actual function that implements this feature. Trace through it: what functions does it call? What DOM elements does it modify? What browser APIs does it use? **Your ABP handler must replicate this code path**, not invent a new one. If the app's export function calls `renderStyledContent()` to prepare output, your ABP handler must call `renderStyledContent()` too -- not re-implement the rendering from scratch.
+
+**Step E -- Gap analysis.** Check for mismatches:
+- Does the existing feature rely on UI that an agent can't interact with? (print dialogs, alerts, downloads) -> Needs adaptation
+- Does the existing feature modify the visible page? -> Your ABP handler should work on an isolated container
+- Does the existing feature use browser APIs that need permissions? -> Declare requirements in the manifest
+- Does the existing feature end with a delivery step (clipboard copy, download, share)? -> Strip the delivery step; your ABP handler returns the content, the agent handles routing
+
+**Step F -- Convergence check.** If multiple features from your inventory map to the same capability name, compare their content-production code paths side by side. If they produce different output structures (different HTML shapes, different included elements, different processing steps), the capability needs a distinguishing parameter -- or they should be separate capabilities.
+
+Common convergence cases:
+- Two clipboard features that copy different representations of the same data (e.g., full HTML document vs. email-ready fragment)
+- Two export features that share a file format but differ in content (e.g., styled document vs. raw data export)
+- Two download features that produce the same file type with different content or formatting
+
+### Worked Example
+
+**App:** Invoice Generator with features from the inventory above.
+
+| Feature | Capability Name | Input | Output | Gaps |
+|---------|----------------|-------|--------|------|
+| Generate invoice | `generate.invoice` | `data`, `options` | `{ html }` | Existing code renders into the page -- ABP handler should return the HTML string directly |
+| Save as PDF | `render.styledHtml` | `data`, `options` | `{ html }` | Existing code opens new window -- extract the content-preparation logic into the ABP handler and return the styled HTML. Agent/client handles PDF delivery |
+| Export HTML | `export.html` | `html`, `options` | HTML file as BinaryData | Existing code triggers `<a download>` -- need to return data in response instead |
+| Share invoice link | `generate.shareUrl` | `invoiceId` | `{ url }` | Existing code generates signed URL -- ABP handler should return the URL string directly |
+
+### Convergence Example
+
+The same Invoice Generator has two clipboard features:
+
+| Feature | User Action | Technical Implementation | Output Type |
+|---------|-------------|------------------------|-------------|
+| Copy invoice HTML | Click "Copy HTML" | Calls `createFullInvoiceDocument(data)` -> full `<!DOCTYPE>` with header, logo, line items, footer, print styles | Styled HTML to clipboard |
+| Copy for email | Click "Copy for Email" | Calls `createEmailFragment(data)` -> `<table>` with inline styles, no header/footer, no print styles | Styled HTML to clipboard |
+
+Both features use clipboard (a delivery mechanism to strip), and both output "styled HTML." Without a convergence check, they collapse into one capability -- and one code path gets lost:
+
+| Feature | Capability | Problem |
+|---------|-----------|---------|
+| Copy invoice HTML | `render.styledInvoice` | This code path was implemented |
+| Copy for email | `render.styledInvoice` | Email format unreachable |
+
+**After convergence check (Step F):** Compare `createFullInvoiceDocument()` and `createEmailFragment()` -- different functions, different output structures. The capability needs a `format` parameter:
+
+| Feature | Capability | Parameters |
+|---------|-----------|-----------|
+| Copy invoice HTML | `render.styledInvoice` | `format: "document"` (default) |
+| Copy for email | `render.styledInvoice` | `format: "email"` |
+
+Alternatively, these could be separate capabilities (`render.invoiceDocument` and `render.invoiceEmail`). Either approach works -- the key is that both code paths remain reachable.
+
+---
+
+## 4. Step 3 -- Implement the ABP Interface
+
+Implementation has three parts: manifest link, manifest file, and `window.abp` runtime.
+
+<Accordion title="Framework Environments (React, Next.js, Vue, Angular, Svelte, etc.)">
+
+The instructions below show vanilla HTML for clarity, but most production web apps use a framework. **Both the manifest `<link>` tag and the `window.abp` object must be available in the initial page load -- before any framework hydration or lifecycle hooks execute.** If either is missing at that point, the ABP client will fail to connect.
+
+**Why lifecycle hooks are wrong for ABP setup:**
+
+- ABP clients discover the manifest by fetching your page's raw HTML (no JavaScript execution). A `<link>` tag injected via `useEffect`, `onMounted`, or similar hooks will never appear in that HTML.
+- ABP clients check for `window.abp` after page load. Lifecycle hooks run *after* framework hydration, which may be too late depending on the client implementation.
+
+**Manifest link -- use your framework's server-side head/metadata API:**
+
+| Framework | Approach |
+|---|---|
+| Next.js (App Router) | `generateMetadata()` with `icons.other: [{ rel: 'abp-manifest', url: '...' }]` |
+| Next.js (Pages Router) | `next/head` in `_document.tsx` |
+| Nuxt | `useHead()` in page setup (SSR-rendered) |
+| SvelteKit | `<svelte:head>` in `+page.svelte` |
+| Angular | Add directly to `index.html` |
+| Plain HTML | Add directly to `<head>` (shown below) |
+
+**`window.abp` -- assign at module scope, not inside lifecycle hooks:**
+
+```javascript
+// Correct: Module scope -- runs when the bundle loads, before hydration
+if (typeof window !== 'undefined') {
+  window.abp = createAbpRuntime();
+}
+
+// Wrong: Lifecycle hook -- runs after hydration, may be too late
+useEffect(() => {
+  window.abp = createAbpRuntime();
+}, []);
+```
+
+Guard with `typeof window !== 'undefined'` for SSR safety. You can still use a lifecycle hook for **cleanup** (removing `window.abp` on unmount during SPA navigation), but the initial assignment must happen at module scope.
+
+<Warning>
+**Async chunks in code-splitting frameworks:** In Next.js App Router, Nuxt, SvelteKit, and similar frameworks, page code is loaded via `<script async>` chunks. A module-scope assignment inside an async chunk may execute **after** the ABP client has already checked for `window.abp` -- creating a race condition. The module-scope advice above is correct for synchronous scripts, but if your framework emits async chunks, you need an additional step.
+</Warning>
+
+**The Bootstrap + Upgrade pattern:** Place a synchronous inline `<script>` (no `async`/`defer`) that creates a placeholder `window.abp` with identity properties and Promise-based proxy methods. When the real runtime loads in an async chunk, it replaces `window.abp` and resolves the proxy queue.
+
+```javascript
+// Bootstrap script -- must be inline and synchronous (no async/defer)
+(function() {
+  var _resolve;
+  var _ready = new Promise(function(r) { _resolve = r; });
+  window.__abpReadyResolve = _resolve;
+
+  function proxy(name) {
+    return function() {
+      var args = arguments;
+      return _ready.then(function() {
+        return window.abp[name].apply(window.abp, args);
+      });
+    };
+  }
+
+  window.abp = {
+    protocolVersion: '0.1',
+    app: { id: 'com.example.myapp', name: 'My App', version: '1.0.0' },
+    initialized: false,
+    sessionId: null,
+    initialize: proxy('initialize'),
+    shutdown: proxy('shutdown'),
+    call: proxy('call'),
+    listCapabilities: proxy('listCapabilities')
+  };
+})();
+```
+
+Then in your async module (the real runtime), after replacing `window.abp`:
+
+```javascript
+// In your async chunk -- after setting up the full window.abp
+window.abp = createAbpRuntime(); // Replace the proxy with the real implementation
+if (typeof window.__abpReadyResolve === 'function') {
+  window.__abpReadyResolve(); // Resolve queued proxy calls
+}
+```
+
+**Next.js App Router example** -- inject the bootstrap in a server component:
+
+```tsx
+// page.tsx (server component)
+const ABP_BOOTSTRAP = `(function(){var r;var p=new Promise(function(res){r=res});window.__abpReadyResolve=r;function proxy(n){return function(){var a=arguments;return p.then(function(){return window.abp[n].apply(window.abp,a)})}}window.abp={protocolVersion:'0.1',app:{id:'com.example.myapp',name:'My App',version:'1.0.0'},initialized:false,sessionId:null,initialize:proxy('initialize'),shutdown:proxy('shutdown'),call:proxy('call'),listCapabilities:proxy('listCapabilities')}})()`;
+
+export default function Page() {
+  return (
+    <>
+      <script dangerouslySetInnerHTML={{ __html: ABP_BOOTSTRAP }} />
+      <ClientComponent />
+    </>
+  );
+}
+```
+
+**Verification tip:** After building your app, inspect the HTML output. If the script setting `window.abp` has `async` or `defer`, you need the bootstrap pattern.
+
+</Accordion>
+
+### Part A: Manifest Link
+
+Add this to your HTML `<head>`:
+
+```html
+<link rel="abp-manifest" href="/abp.json">
+```
+
+- Use `rel="abp-manifest"` exactly (case-sensitive)
+- `href` can be relative (`/abp.json`) or absolute
+- Place it in `<head>`, before or after other `<link>` tags
+
+### Part B: Manifest File
+
+Create `abp.json` (or wherever your `href` points):
+
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "com.example.myapp",
+    "name": "My App",
+    "version": "1.0.0",
+    "description": "Brief description of your app"
+  },
+  "capabilities": [
+    {
+      "name": "convert.markdownToHtml",
+      "description": "Convert Markdown to HTML",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "markdown": {
+            "type": "string",
+            "description": "Markdown content to convert"
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "gfm": { "type": "boolean", "description": "Enable GitHub Flavored Markdown" }
+            }
+          }
+        },
+        "required": ["markdown"]
+      }
+    },
+    {
+      "name": "export.html",
+      "description": "Export content as HTML document",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "html": {
+            "type": "string",
+            "description": "HTML content to export"
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "filename": { "type": "string", "description": "Suggested filename" }
+            }
+          }
+        },
+        "required": ["html"]
+      }
+    }
+  ]
+}
+```
+
+**Manifest field reference:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `abp` | Yes | Protocol version: `"1.0"` |
+| `app.id` | Yes | Unique ID in reverse-domain notation |
+| `app.name` | Yes | Human-readable name |
+| `app.version` | Yes | Semantic version |
+| `app.description` | No | Brief description |
+| `capabilities[].name` | Yes | Dot-notation capability name |
+| `capabilities[].description` | No | Human-readable description |
+| `capabilities[].inputSchema` | No | JSON Schema for input parameters |
+| `capabilities[].outputSchema` | No | JSON Schema for output data |
+
+### Part C: `window.abp` Runtime
+
+Implement the `window.abp` object with the required methods: `initialize()`, `shutdown()`, `call()`, and `listCapabilities()`.
+
+The object has two parts -- **identity properties** (synchronous, always present) and **async methods** (session lifecycle and capability invocation):
+
+```
+window.abp = {
+  // Identity (synchronous, always present)
+  protocolVersion, app, initialized, sessionId,
+
+  // Methods (async operations)
+  initialize(), shutdown(), call(), listCapabilities()
+};
+```
+
+Full implementation:
+
+```javascript
+window.abp = {
+  // Identity
+  protocolVersion: '0.1',
+  app: {
+    id: 'com.example.myapp',
+    name: 'My App',
+    version: '1.0.0'
+  },
+
+  // Session state
+  initialized: false,
+  sessionId: null,
+
+  // Initialize session
+  async initialize(params) {
+    this.initialized = true;
+    this.sessionId = crypto.randomUUID();
+
+    return {
+      sessionId: this.sessionId,
+      protocolVersion: '0.1',
+      app: this.app,
+      capabilities: [
+        { name: 'convert.markdownToHtml', available: true },
+        { name: 'export.html', available: true }
+      ],
+      features: {
+        notifications: false,
+        progress: false,
+        elicitation: false,
+        dynamicCapabilities: false
+      }
+    };
+  },
+
+  // Shutdown session
+  async shutdown() {
+    this.initialized = false;
+    this.sessionId = null;
+  },
+
+  // Call a capability
+  async call(capability, params = {}) {
+    if (!this.initialized) {
+      return {
+        success: false,
+        error: {
+          code: 'NOT_INITIALIZED',
+          message: 'Call initialize() first',
+          retryable: true
+        }
+      };
+    }
+
+    switch (capability) {
+      case 'convert.markdownToHtml':
+        return await this._convertMarkdownToHtml(params);
+      case 'export.html':
+        return await this._exportHtml(params);
+      default:
+        return {
+          success: false,
+          error: {
+            code: 'UNKNOWN_CAPABILITY',
+            message: `Unknown capability: ${capability}`,
+            retryable: false
+          }
+        };
+    }
+  },
+
+  // List all capabilities with runtime details
+  async listCapabilities() {
+    return [
+      {
+        name: 'convert.markdownToHtml',
+        description: 'Convert Markdown to HTML',
+        available: true
+      },
+      {
+        name: 'export.html',
+        description: 'Export content as HTML document',
+        available: true
+      }
+    ];
+  },
+
+  // --- Capability handlers below ---
+  // (See patterns for each type)
+};
+```
+
+<Warning>
+**`listCapabilities()` is required for MCP bridge compatibility.** The reference MCP bridge calls `window.abp.listCapabilities()` as a separate step after `initialize()` to query full capability details at runtime. If this method is missing, the bridge connection will fail with `"abp.listCapabilities is not a function"`. The capabilities returned here should be consistent with the summary returned by `initialize()`, but can include additional detail (e.g., `description`, `inputSchema`, `requirements`). **Important:** `listCapabilities()` returns a **plain array**, not a `{ success, data }` envelope like `call()`. The bridge iterates the result directly (`.length`, `.forEach()`), so wrapping it in an envelope will break capability discovery.
+</Warning>
+
+### Capability Handler Patterns
+
+#### Text Conversion (`convert.*`)
+
+Return the converted content directly in the response:
+
+```javascript
+async _convertMarkdownToHtml({ markdown, options = {} }) {
+  try {
+    // Use the SAME library your app already uses
+    const html = marked.parse(markdown, {
+      gfm: options.gfm !== false,
+      breaks: options.breaks || false
+    });
+
+    return {
+      success: true,
+      data: { html }
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: {
+        code: 'CONVERSION_ERROR',
+        message: error.message,
+        retryable: false
+      }
+    };
+  }
+}
+```
+
+#### File Export (`export.*` -- non-PDF)
+
+Return the file data as BinaryData in the response:
+
+```javascript
+async _exportHtml({ html, options = {} }) {
+  const filename = options.filename || 'export.html';
+
+  // For text content
+  return {
+    success: true,
+    data: {
+      document: {
+        content: html,
+        mimeType: 'text/html',
+        encoding: 'utf-8',
+        size: new Blob([html]).size,
+        filename: filename
+      }
+    }
+  };
+}
+```
+
+For binary content, use base64 encoding:
+
+```javascript
+async _exportImage({ imageData, options = {} }) {
+  // imageData is already a base64 string from canvas.toDataURL()
+  return {
+    success: true,
+    data: {
+      document: {
+        content: imageData,
+        mimeType: 'image/png',
+        encoding: 'base64',
+        size: atob(imageData).length,
+        filename: options.filename || 'export.png'
+      }
+    }
+  };
+}
+```
+
+#### Image Processing (`process.image`)
+
+Process an image using browser Canvas APIs and return the result:
+
+```javascript
+async _processImage({ imageData, operations = [] }) {
+  try {
+    const img = new Image();
+    img.src = imageData;
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+
+    // Apply operations (resize, crop, etc.)
+    for (const op of operations) {
+      if (op.type === 'resize') {
+        canvas.width = op.width;
+        canvas.height = op.height;
+        ctx.drawImage(img, 0, 0, op.width, op.height);
+      }
+    }
+
+    const resultData = canvas.toDataURL('image/png');
+    return {
+      success: true,
+      data: {
+        image: resultData,
+        mimeType: 'image/png',
+        width: canvas.width,
+        height: canvas.height
+      }
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: {
+        code: 'OPERATION_FAILED',
+        message: error.message,
+        retryable: false
+      }
+    };
+  }
+}
+```
+
+#### PDF Export -- See [Section 6](#6-the-pdfprint-pattern) below
+
+The recommended pattern is simple: the app returns HTML content (via a `convert.*` or `render.*` capability), and the agent or client generates a PDF from it. No PDF-specific logic is needed in the app. Section 6 covers this and more advanced patterns.
+
+---
+
+## 5. Step 4 -- Review Against the Inventory
+
+After implementing your ABP interface (Steps 1-3), step back and review the implementation against your original feature inventory. This is a **semantic review** -- not a structural check (that's the [Validation Checklist](#9-validation-checklist)), but a verification that your implementation faithfully represents everything your app can do.
+
+Steps 1-3 build the implementation going forward: inventory -> map -> implement. This step goes **backward**: from the finished implementation to the inventory, checking for anything lost along the way.
+
+### Coverage
+
+Walk your inventory row by row. For each feature, write down:
+
+1. Which ABP capability produces this feature's output
+2. What parameters you'd pass to reproduce it
+
+If you can't answer both for every row, a feature was lost during mapping or implementation.
+
+### Output Fidelity
+
+For each capability, compare its actual output against the original feature's output:
+
+- **Same structure?** If the original feature produces a full `<!DOCTYPE>` document with embedded CSS, copy buttons, and a `<script>` tag, the capability must produce exactly that -- not a stripped-down version.
+- **Same code path?** Does the ABP handler call the same underlying functions as the original feature?
+- **Same options?** If the original feature has variants (e.g., light/dark theme, full/compact layout), can the capability produce all of them?
+
+### Convergence Verification
+
+Where multiple inventory rows point to the same capability, call it once for each row (with the appropriate parameters) and compare:
+
+- Do the outputs match what each original feature produces?
+- Are the differences between features preserved through the capability's parameters?
+- Or did distinct content-production paths collapse into one?
+
+This verifies the convergence check (Step F in [Section 3](#3-step-2--map-features-to-abp-capabilities)) against the actual implementation, not just the mapping.
+
+### The Review Test
+
+For each feature-to-capability pairing, this question should have a clear answer:
+
+> *"If an agent calls capability X with parameters Y, does it get the same content that a user gets when they click the corresponding feature button?"*
+
+If the answer is "mostly" or "sort of," something was lost. Go back to the inventory, compare the code paths, and fix the capability.
+
+---
+
+## 6. The PDF/Print Pattern
+
+PDF is a common example of the delivery-vs-content-production principle from [Section 1](#1-the-critical-rule). The same principle applies to all delivery mechanisms -- clipboard, downloads, share sheets -- but PDF is covered separately because apps have multiple valid approaches.
+
+### The Simple Pattern (Recommended)
+
+The app exposes a content-producing capability that returns HTML (or other renderable content). The agent or client generates a PDF from that content using whatever tool is available. No PDF-specific logic is needed in the app.
+
+```javascript
+// Simple: App returns content -- agent/client handles PDF delivery
+async _convertMarkdownToHtml({ markdown, options = {} }) {
+  const html = marked.parse(markdown, { gfm: options.gfm !== false });
+  return { success: true, data: { html } };
+}
+```
+
+**Why this is preferred:** The app stays simple -- it just returns content. No `window.print()`, no `#print-container`, no `@media print` CSS, no transport-layer coupling. If your app already has a content-producing capability, you probably don't need a separate `export.pdf` capability at all.
+
+### Advanced: The `window.print()` Pattern
+
+When the app needs its own CSS context for rendering (custom `@media print` styles, font preloading, complex page layout), it can use `window.print()` as a **transport signal**. Puppeteer-based clients can intercept this and generate a PDF via `page.pdf()`.
+
+```javascript
+// Advanced: Prepare content in app context, signal transport
+async _exportPdf({ html, options = {} }) {
+  const container = document.getElementById('print-container');
+  container.innerHTML = html;
+  await document.fonts.ready;
+  window.print(); // Transport signal -- intercepted by Puppeteer-based clients
+  return { success: true, data: { rendered: true } };
+}
+```
+
+This pattern requires `@media print` CSS rules to isolate the print container from the rest of the page UI. See [Common Pitfalls](/guides/common-pitfalls) for detailed examples.
+
+### Fallback: Server-Side or In-Browser Generation
+
+If your app must work across **all transports** (including WebSocket and postMessage where there is no Puppeteer), generate the PDF server-side or with a JS library and return it as `BinaryData`:
+
+```javascript
+// Fallback: Return PDF as BinaryData (transport-agnostic)
+async _exportPdf({ html, options = {} }) {
+  const response = await fetch('/api/generate-pdf', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ html, options })
+  });
+  const pdfBlob = await response.blob();
+  const arrayBuffer = await pdfBlob.arrayBuffer();
+  const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+  return {
+    success: true,
+    data: {
+      document: {
+        content: base64,
+        mimeType: 'application/pdf',
+        encoding: 'base64',
+        size: pdfBlob.size,
+        filename: options.filename || 'export.pdf'
+      }
+    }
+  };
+}
+```
+
+### Adapting an Existing Print Feature
+
+If your app already has a "Save as PDF" feature, extract the content-preparation logic and expose it as a content-producing capability:
+
+```javascript
+// Your app's existing code
+function savePdf() {
+  const printWindow = window.open('', '_blank');
+  printWindow.document.write(getStyledHtml());
+  printWindow.print();
+  printWindow.close();
+}
+
+// ABP adaptation: expose the content
+async _renderHtml({ data, options = {} }) {
+  const html = getStyledHtml(data); // Reuse existing function
+  return { success: true, data: { html } };
+}
+```
+
+### Which Approach to Choose
+
+| Aspect | Return content (Recommended) | `window.print()` (Advanced) | Server-side (Fallback) |
+|--------|------------------------------|----------------------------|------------------------|
+| App complexity | **None** -- just return content | Medium -- print container + CSS | Medium -- server endpoint |
+| Transport support | Any (client handles PDF) | Puppeteer/Playwright only | All transports |
+| When to use | **Most apps** | App needs its own CSS context | Transport-agnostic is required |
+
+---
+
+## 7. Forbidden Patterns
+
+Many of these forbidden patterns are **delivery mechanisms** -- browser features that route content to humans. The delivery-vs-content-production principle ([Section 1](#1-the-critical-rule)) explains why they fail: ABP capabilities must produce content, not deliver it. The remaining patterns involve blocking UI (dialogs, prompts) that agents cannot interact with.
+
+Do NOT use these browser APIs inside capability handlers.
+
+| Forbidden API | Why It Fails | ABP Alternative |
+|--------------|-------------|-----------------|
+| `alert(message)` | Opens modal dialog -- page is blocked until human clicks OK | Return data in the response; use `abp.notify()` for informational messages |
+| `confirm(message)` | Opens modal dialog -- agent can't click OK/Cancel | Use ABP elicitation: `abp.elicit({ method: 'elicitation/confirm', ... })` |
+| `prompt(message)` | Opens modal dialog -- agent can't type input | Use ABP elicitation: `abp.elicit({ method: 'elicitation/text', ... })` |
+| `window.open(url)` | Opens new window/tab -- agent can't interact with it | Render content in the current page (e.g., in a container div) |
+| `<a download>.click()` | Triggers browser download bar -- agent can't access the file | Return the file data as BinaryData in the response |
+| `location.href = blobUrl` | Triggers navigation/download -- agent loses page context | Return the file data as BinaryData in the response |
+| `navigator.clipboard.*` | Delivery mechanism -- clipboard is a host-side concern; also requires user gestures that agents cannot provide | Expose the content-producing capability (e.g., `convert.markdownToHtml`); agent uses host tools (`pbcopy`, `xclip`, `clip`) |
+| `navigator.share()` | Delivery mechanism -- opens native share dialog; agent cannot select a share target | Return the shareable content (URL, text, title) in the response; agent routes as needed |
+| `showSaveFilePicker()` / `showOpenFilePicker()` | Opens OS file dialog -- agent can't navigate the file system dialog or select a path | For saving: return file data in the response; agent writes to disk. For loading: accept file content as an input parameter |
+| `new Notification()` / `Notification.requestPermission()` | Displays OS notification -- agent can't see or dismiss it; permission prompt blocks | Return notification-worthy data in the response; agent decides how to surface it |
+
+### Elicitation Example (replacing `confirm`)
+
+```javascript
+// Forbidden
+const ok = confirm('Delete all items?');
+
+// ABP Alternative
+const response = await abp.elicit({
+  method: 'elicitation/confirm',
+  params: {
+    message: 'Delete all items? This cannot be undone.',
+    destructive: true
+  },
+  timeout: 30000
+});
+const ok = response.success && response.data.confirmed;
+```
+
+### Programmatic Downloads (full example)
+
+This is a common pattern in web apps. The entire Blob/objectURL/anchor approach must be replaced:
+
+```javascript
+// Wrong: Triggers browser download -- agent can't access the file
+async _exportFile({ content, mimeType, filename }) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  return {
+    success: true,
+    data: { status: 'download_started', filename: filename }
+  };
+}
+```
+
+```javascript
+// Correct: Return the data in the response
+async _exportFile({ content, mimeType, filename }) {
+  const base64 = btoa(unescape(encodeURIComponent(content)));
+
+  return {
+    success: true,
+    data: {
+      file: {
+        content: base64,
+        mimeType: mimeType,
+        encoding: 'base64',
+        size: new Blob([content]).size,
+        filename: filename
+      }
+    }
+  };
+}
+```
+
+### Delivery Mechanisms: Clipboard and Share
+
+Clipboard and share are delivery mechanisms -- they route content to a destination that the agent should control. The fix is the same in both cases: produce the content, return it in the response, and let the agent handle routing.
+
+**Clipboard -- wrong:**
+
+```javascript
+// Wrong: Writes to the browser's clipboard -- useless to an agent in a separate process
+async _copyAsHtml({ markdown }) {
+  const html = marked.parse(markdown);
+  await navigator.clipboard.writeText(html);
+  return {
+    success: true,
+    data: { status: 'copied_to_clipboard' }
+  };
+}
+```
+
+**Clipboard -- right:**
+
+```javascript
+// Correct: Return the content -- agent uses host tools (pbcopy, xclip, clip) if it needs clipboard
+async _convertMarkdownToHtml({ markdown, options = {} }) {
+  const html = marked.parse(markdown, { gfm: options.gfm !== false });
+  return {
+    success: true,
+    data: { html }
+  };
+}
+```
+
+**Share -- wrong:**
+
+```javascript
+// Wrong: Opens native share dialog -- agent can't select a share target
+async _shareContent({ title, text, url }) {
+  await navigator.share({ title, text, url });
+  return {
+    success: true,
+    data: { status: 'share_dialog_opened' }
+  };
+}
+```
+
+**Share -- right:**
+
+```javascript
+// Correct: Return the shareable data -- agent routes as needed
+async _getShareableData({ contentId }) {
+  const content = await loadContent(contentId);
+  return {
+    success: true,
+    data: {
+      title: content.title,
+      text: content.summary,
+      url: content.publicUrl
+    }
+  };
+}
+```
+
+### Permission-Gated Capabilities (declaring requirements)
+
+If your capability uses a browser API that may trigger a permission prompt, you must:
+1. **Declare the requirement** in your manifest capability
+2. **Handle denial gracefully** with a `PERMISSION_DENIED` error code
+
+**Manifest declaration:**
+
+```json
+{
+  "name": "hardware.cameraCapture",
+  "description": "Capture image from device camera",
+  "requirements": [
+    {
+      "type": "permission",
+      "description": "Camera access permission required",
+      "met": false,
+      "resolution": "Grant camera permission to the page origin"
+    }
+  ],
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "resolution": { "type": "string", "enum": ["low", "medium", "high"] }
+    }
+  }
+}
+```
+
+**Handler with proper error handling:**
+
+```javascript
+async _cameraCapture({ resolution = 'medium' }) {
+  try {
+    const constraints = {
+      video: { width: resolution === 'high' ? 1920 : resolution === 'medium' ? 1280 : 640 }
+    };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    const track = stream.getVideoTracks()[0];
+    const imageCapture = new ImageCapture(track);
+    const bitmap = await imageCapture.grabFrame();
+    track.stop();
+
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+
+    return {
+      success: true,
+      data: {
+        image: canvas.toDataURL('image/png'),
+        mimeType: 'image/png',
+        width: bitmap.width,
+        height: bitmap.height
+      }
+    };
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      return {
+        success: false,
+        error: {
+          code: 'PERMISSION_DENIED',
+          message: 'Camera access permission denied',
+          retryable: true,
+          retryAfter: 1000
+        }
+      };
+    }
+    throw err;
+  }
+}
+```
+
+The agent (or ABP client) can then handle `PERMISSION_DENIED` by checking the requirement's `resolution` field and taking appropriate action.
+
+---
+
+## 8. Response Patterns
+
+### BinaryData Format
+
+When returning binary or file content, use this structure:
+
+```javascript
+{
+  success: true,
+  data: {
+    document: {
+      content: '...',            // The content (string or base64)
+      mimeType: 'text/html',     // REQUIRED: MIME type
+      encoding: 'utf-8',         // REQUIRED for strings: 'utf-8' or 'base64'
+      size: 4523,                // RECOMMENDED: size in bytes
+      filename: 'export.html'    // OPTIONAL: suggested filename
+    }
+  }
+}
+```
+
+For large files (>10MB), use a download reference instead:
+
+```javascript
+{
+  success: true,
+  data: {
+    document: {
+      downloadUrl: 'https://example.com/files/abc123',
+      mimeType: 'application/pdf',
+      size: 15000000,
+      filename: 'large-export.pdf'
+    }
+  }
+}
+```
+
+### Expected Output by Capability Pattern
+
+| Capability Pattern | Agent Expects to Receive |
+|-------------------|------------------------|
+| `export.*` | The exported file -- as BinaryData in the response. (For PDF, prefer returning HTML via a `convert.*` capability and letting the agent or client generate the PDF) |
+| `convert.*` | The converted content (text or BinaryData depending on target format) |
+| `generate.*` | The generated content |
+| `render.*` | The rendered output (image, HTML, etc.) |
+| `storage.write` | Confirmation: `{ bytesWritten }` -- the side effect IS the purpose |
+| `storage.read` | The stored content |
+
+### The Consistency Rule
+
+All capabilities in the same namespace MUST produce **consistent results from the agent's perspective**. If `export.html` returns `data.document` with content, mimeType, and filename, then other `export.*` capabilities should also deliver files in the same shape.
+
+```javascript
+// Consistent: Both return data in the same structure
+
+// export.html response:
+{ success: true, data: { document: { content: '<html>...</html>', mimeType: 'text/html', encoding: 'utf-8', size: 4523, filename: 'export.html' } } }
+
+// export.csv response:
+{ success: true, data: { document: { content: 'name,age\nAlice,30', mimeType: 'text/csv', encoding: 'utf-8', size: 22, filename: 'export.csv' } } }
+```
+
+<Note>
+For PDF, prefer returning HTML via a `convert.*` capability and letting the agent or client generate the PDF, rather than creating an `export.pdf` capability. This keeps the app simple and follows the delivery-vs-content-production principle.
+</Note>
+
+### Error Response Format
+
+When a capability fails, `call()` returns `{ success: false, error }`. The `error` object has this shape:
+
+```javascript
+{
+  code: 'ERROR_CODE',       // REQUIRED: machine-readable error code (see table below)
+  message: 'Human-readable description of what went wrong',  // REQUIRED
+  retryable: false          // REQUIRED: whether the agent should retry the call
+}
+```
+
+#### Standard Error Codes
+
+| Code | When | Retryable |
+|------|------|-----------|
+| `NOT_INITIALIZED` | `call()` invoked before `initialize()` | Yes |
+| `UNKNOWN_CAPABILITY` | Unrecognized capability name | No |
+| `INVALID_PARAMS` | Parameters don't match the capability's input schema | No |
+| `OPERATION_FAILED` | The capability handler threw during execution | Maybe |
+| `PERMISSION_DENIED` | A browser permission was denied (e.g., camera, microphone) | Yes |
+| `CAPABILITY_UNAVAILABLE` | Capability exists but can't run in the current state | Maybe |
+| `TIMEOUT` | Operation exceeded its timeout | Yes |
+| `NOT_IMPLEMENTED` | Capability is declared in the manifest but not yet implemented | No |
+
+"Maybe" means the handler should decide based on context -- for example, `OPERATION_FAILED` from a transient network error is retryable, but from a logic error it is not.
+
+You may define app-specific error codes (e.g., `CONVERSION_ERROR`, `RATE_LIMITED`) as long as they follow the same `{ code, message, retryable }` shape. Agents that don't recognize a custom code will fall back to the `retryable` flag.
+
+---
+
+## 9. Validation Checklist
+
+Run through this checklist before shipping your ABP implementation.
+
+### Discovery
+
+- [ ] HTML contains `<link rel="abp-manifest" href="...">` in `<head>` (must be in server-rendered HTML -- see [Framework Environments](#4-step-3--implement-the-abp-interface))
+- [ ] Manifest URL is accessible (not 404)
+- [ ] Manifest is valid JSON
+- [ ] Manifest has required fields: `abp`, `app.id`, `app.name`, `app.version`, `capabilities`
+- [ ] Each capability has a `name` field
+- [ ] In the **built output HTML**, `window.abp` is set by a synchronous `<script>` (no `async`/`defer`), or a synchronous bootstrap creates it before async chunks load
+
+### Runtime
+
+- [ ] `window.abp` is defined when the page loads (must be assigned at module scope, not in lifecycle hooks -- see [Framework Environments](#4-step-3--implement-the-abp-interface))
+- [ ] `window.abp.initialize()` returns `sessionId`, `protocolVersion`, `app`, `capabilities`, `features`
+- [ ] `window.abp.call()` routes to the correct handler for each capability
+- [ ] `window.abp.call()` returns `{ success: false, error: { code: 'NOT_INITIALIZED' } }` if called before `initialize()`
+- [ ] `window.abp.call()` returns `{ success: false, error: { code: 'UNKNOWN_CAPABILITY' } }` for unknown capabilities
+- [ ] `window.abp.listCapabilities()` returns an array of capabilities with at least `name` and `available` fields
+- [ ] `window.abp.shutdown()` resets session state
+
+### Headless Test (per capability)
+
+For each capability, verify:
+
+- [ ] The capability produces a complete result with no human present
+- [ ] No `alert()`, `confirm()`, `prompt()` calls
+- [ ] No `window.open()` calls
+- [ ] No programmatic downloads (`<a download>`, blob URL navigation)
+- [ ] No clipboard writes (`navigator.clipboard.*`) -- return content instead
+- [ ] No native share invocations (`navigator.share()`) -- return shareable data instead
+- [ ] No reliance on native permission prompts without declared requirements
+
+### Data Integrity
+
+- [ ] `export.*` capabilities deliver actual files (BinaryData or transport-captured), not status messages
+- [ ] `convert.*` capabilities return the converted content, not "conversion complete" messages
+- [ ] `generate.*` capabilities return the generated content, not "generation started" messages
+- [ ] Binary content has correct `mimeType` and `encoding` fields
+- [ ] The `size` field (when provided) matches the actual content size
+
+### Self-Containment
+
+- [ ] Each capability operates on its **input parameters**, not on accumulated page/UI state
+- [ ] No capability requires a previous capability call to "set up" state (e.g., no need to call `state.setContent` before `export.pdf`)
+- [ ] `export.*` handlers render the **content parameter** into a print container -- not whatever the page is currently showing
+- [ ] No `ui.*` or `state.set*` capabilities that duplicate parameters already available on data-producing capabilities
+
+### Consistency
+
+- [ ] All `export.*` capabilities return files in the same response shape
+- [ ] All `convert.*` capabilities return content in the same response shape
+- [ ] Error responses use consistent error codes (`INVALID_PARAMS`, `PERMISSION_DENIED`, `OPERATION_FAILED`, etc.)
+
+---
+
+## 10. Quick Reference Example
+
+A complete minimal ABP implementation showing all three files (HTML, manifest, runtime). This example uses a Markdown Converter, but the same structure applies to any web app -- replace the capability names, input schemas, and handler logic with your app's features.
+
+Notice that the app has no PDF-specific code. The agent gets HTML from `convert.markdownToHtml`, then uses a client-provided tool to produce a PDF when needed -- the same way it would use `pbcopy` for clipboard.
+
+### `index.html`
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Markdown Converter</title>
+  <link rel="abp-manifest" href="/abp.json">
+</head>
+<body>
+  <h1>Markdown Converter</h1>
+  <textarea id="input" placeholder="Enter markdown..."></textarea>
+  <div id="preview"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/abp-runtime.js"></script>
+</body>
+</html>
+```
+
+### `abp.json`
+
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "com.example.markdown-converter",
+    "name": "Markdown Converter",
+    "version": "1.0.0",
+    "description": "Convert Markdown to HTML"
+  },
+  "capabilities": [
+    {
+      "name": "convert.markdownToHtml",
+      "description": "Convert Markdown text to HTML",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "markdown": { "type": "string", "description": "Markdown content to convert" },
+          "options": {
+            "type": "object",
+            "properties": {
+              "gfm": { "type": "boolean", "description": "Enable GitHub Flavored Markdown" }
+            }
+          }
+        },
+        "required": ["markdown"]
+      }
+    },
+    {
+      "name": "export.html",
+      "description": "Export content as HTML document",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "html": { "type": "string", "description": "HTML content to export" },
+          "options": {
+            "type": "object",
+            "properties": {
+              "filename": { "type": "string", "description": "Suggested filename" }
+            }
+          }
+        },
+        "required": ["html"]
+      }
+    }
+  ]
+}
+```
+
+### `abp-runtime.js`
+
+```javascript
+window.abp = {
+  protocolVersion: '0.1',
+  app: { id: 'com.example.markdown-converter', name: 'Markdown Converter', version: '1.0.0' },
+  initialized: false,
+  sessionId: null,
+
+  async initialize(params) {
+    this.initialized = true;
+    this.sessionId = crypto.randomUUID();
+    return {
+      sessionId: this.sessionId,
+      protocolVersion: '0.1',
+      app: this.app,
+      capabilities: [
+        { name: 'convert.markdownToHtml', available: true },
+        { name: 'export.html', available: true }
+      ],
+      features: {
+        notifications: false,
+        progress: false,
+        elicitation: false,
+        dynamicCapabilities: false
+      }
+    };
+  },
+
+  async shutdown() {
+    this.initialized = false;
+    this.sessionId = null;
+  },
+
+  async call(capability, params = {}) {
+    if (!this.initialized) {
+      return {
+        success: false,
+        error: { code: 'NOT_INITIALIZED', message: 'Call initialize() first', retryable: true }
+      };
+    }
+
+    switch (capability) {
+      case 'convert.markdownToHtml':
+        return await this._convertMarkdownToHtml(params);
+      case 'export.html':
+        return await this._exportHtml(params);
+      default:
+        return {
+          success: false,
+          error: { code: 'UNKNOWN_CAPABILITY', message: `Unknown capability: ${capability}`, retryable: false }
+        };
+    }
+  },
+
+  // List all capabilities with runtime details
+  async listCapabilities() {
+    return [
+      {
+        name: 'convert.markdownToHtml',
+        description: 'Convert Markdown text to HTML',
+        available: true
+      },
+      {
+        name: 'export.html',
+        description: 'Export content as HTML document',
+        available: true
+      }
+    ];
+  },
+
+  // --- Capability Handlers ---
+
+  async _convertMarkdownToHtml({ markdown, options = {} }) {
+    try {
+      const html = marked.parse(markdown, {
+        gfm: options.gfm !== false,
+        breaks: options.breaks || false
+      });
+      return { success: true, data: { html } };
+    } catch (error) {
+      return {
+        success: false,
+        error: { code: 'CONVERSION_ERROR', message: error.message, retryable: false }
+      };
+    }
+  },
+
+  async _exportHtml({ html, options = {} }) {
+    const filename = options.filename || 'export.html';
+
+    return {
+      success: true,
+      data: {
+        document: {
+          content: html,
+          mimeType: 'text/html',
+          encoding: 'utf-8',
+          size: new Blob([html]).size,
+          filename: filename
+        }
+      }
+    };
+  }
+};
+```
+
+**Agent workflow for PDF output:** The agent calls `convert.markdownToHtml` to get HTML, then uses a client-side tool to generate a PDF from that HTML. The app never needs to know about PDF -- it just produces content.

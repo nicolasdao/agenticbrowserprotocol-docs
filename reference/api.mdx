@@ -1,0 +1,820 @@
+---
+title: "API Reference"
+description: "Detailed API documentation with complete TypeScript definitions"
+icon: "book"
+---
+
+Complete API documentation for the Agentic Browser Protocol.
+
+<Note>
+This document contains the complete API documentation and TypeScript definitions for ABP.
+</Note>
+
+## window.abp Interface
+
+Every ABP-compliant app MUST expose this interface:
+
+```typescript
+interface ABP {
+  // Required methods
+  initialize(params: InitializeParams): Promise<InitializeResult>;
+  shutdown(params?: ShutdownParams): Promise<void>;
+  call(capability: string, params?: object, options?: CallOptions): Promise<ABPResponse>;
+
+  // Optional methods
+  listCapabilities(): Promise<Capability[]>;
+  describeCapability(name: string): Promise<Capability | null>;
+  supports(name: string): Promise<SupportInfo>;
+  notify(event: string, data?: unknown): void;
+  notifyProgress(info: ProgressInfo): void;
+  elicit(request: ElicitationRequest): Promise<ElicitationResponse>;
+  cancel(callId: string, reason?: string): Promise<CancelResponse>;
+
+  // Metadata
+  protocolVersion: string;
+  app: { id: string; name: string; version: string };
+}
+```
+
+## Core Methods
+
+### initialize()
+
+Start an ABP session.
+
+```typescript
+initialize(params: InitializeParams): Promise<InitializeResult>
+```
+
+**Parameters:**
+```typescript
+interface InitializeParams {
+  agent: { name: string; version: string };
+  protocolVersion: string;
+  requestedCapabilities?: string[];
+  features: {
+    notifications: boolean;
+    progress: boolean;
+    elicitation: boolean;
+  };
+  agentCapabilities?: {
+    allowedRequests: string[];
+  };
+}
+```
+
+**Returns:**
+```typescript
+interface InitializeResult {
+  sessionId: string;
+  protocolVersion: string;
+  app: { id: string; name: string; version: string };
+  capabilities: CapabilitySummary[];
+  features: {
+    notifications: boolean;
+    progress: boolean;
+    elicitation: boolean;
+    dynamicCapabilities: boolean;
+  };
+}
+```
+
+**Example:**
+```javascript
+const session = await abp.initialize({
+  agent: { name: 'my-agent', version: '1.0.0' },
+  protocolVersion: '0.1',
+  features: { notifications: true, progress: true, elicitation: true }
+});
+```
+
+### shutdown()
+
+End an ABP session.
+
+```typescript
+shutdown(params?: ShutdownParams): Promise<void>
+```
+
+**Parameters:**
+```typescript
+interface ShutdownParams {
+  reason?: string;
+}
+```
+
+**Example:**
+```javascript
+await abp.shutdown({ reason: 'User requested disconnect' });
+```
+
+### call()
+
+Execute a capability.
+
+```typescript
+call(capability: string, params?: object, options?: CallOptions): Promise<ABPResponse>
+```
+
+**Parameters:**
+- `capability` — Capability name (e.g., `"convert.markdownToHtml"`)
+- `params` — Capability-specific parameters
+- `options` — Call options
+
+```typescript
+interface CallOptions {
+  timeout?: number;
+  progressToken?: string;
+  callId?: string;
+}
+```
+
+**Returns:**
+```typescript
+interface ABPResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  error?: ABPError;
+  metadata?: {
+    duration: number;
+    cached?: boolean;
+  };
+  cancelled?: boolean;
+}
+
+interface ABPError {
+  code: string;
+  message: string;
+  details?: unknown;
+  retryable: boolean;
+  retryAfter?: number;
+  alternatives?: string[];
+}
+```
+
+**Example:**
+```javascript
+const result = await abp.call('convert.markdownToHtml', {
+  markdown: '# Hello World',
+  options: { sanitize: true }
+});
+
+if (result.success) {
+  console.log('HTML:', result.data.html);
+} else {
+  console.error('Error:', result.error.message);
+}
+```
+
+## Discovery Methods
+
+### listCapabilities()
+
+List all available capabilities.
+
+```typescript
+listCapabilities(): Promise<Capability[]>
+```
+
+**Returns:** Array of `Capability` objects (see [Types](#types)).
+
+### describeCapability()
+
+Get detailed information about a specific capability.
+
+```typescript
+describeCapability(name: string): Promise<Capability | null>
+```
+
+**Returns:** `Capability` object or `null` if not found.
+
+### supports()
+
+Quick check if a capability is supported and available.
+
+```typescript
+supports(name: string): Promise<SupportInfo>
+```
+
+**Returns:**
+```typescript
+interface SupportInfo {
+  supported: boolean;
+  available: boolean;
+  reason?: string;
+  requirements?: Requirement[];
+  features?: Record<string, boolean>;
+  alternatives?: string[];
+}
+```
+
+**Example:**
+```javascript
+const support = await abp.supports('convert.markdownToHtml');
+if (support.available) {
+  // Can use right now
+} else {
+  console.log('Not available:', support.reason);
+}
+```
+
+## Communication Methods
+
+### notify()
+
+Send a notification to the agent (app → agent).
+
+```typescript
+notify(event: string, data?: unknown): void
+```
+
+**Example:**
+```javascript
+abp.notify('notifications/state/changed', {
+  field: 'documentReady',
+  oldValue: false,
+  newValue: true
+});
+```
+
+### notifyProgress()
+
+Report progress for a long-running operation.
+
+```typescript
+notifyProgress(info: ProgressInfo): void
+```
+
+**Parameters:**
+```typescript
+interface ProgressInfo {
+  operationId: string;
+  progress: number;
+  total?: number;
+  percentage?: number;
+  status?: string;
+  stage?: string;
+  estimatedRemaining?: number;
+}
+```
+
+**Example:**
+```javascript
+abp.notifyProgress({
+  operationId: 'pdf-123',
+  progress: 5,
+  total: 10,
+  percentage: 50,
+  status: 'Rendering page 5 of 10'
+});
+```
+
+### elicit()
+
+Request input from the agent/user.
+
+```typescript
+elicit(request: ElicitationRequest): Promise<ElicitationResponse>
+```
+
+**Parameters:**
+```typescript
+interface ElicitationRequest {
+  method: string;
+  params?: Record<string, unknown>;
+  timeout?: number;
+}
+```
+
+**Returns:**
+```typescript
+interface ElicitationResponse {
+  success: boolean;
+  data?: unknown;
+  error?: ABPError;
+  cancelled?: boolean;
+}
+```
+
+**Example:**
+```javascript
+const response = await abp.elicit({
+  method: 'elicitation/input',
+  params: {
+    prompt: 'What page size?',
+    schema: { type: 'string', enum: ['letter', 'a4'] }
+  }
+});
+
+if (response.success) {
+  const pageSize = response.data.value;
+}
+```
+
+### cancel()
+
+Cancel a long-running operation.
+
+```typescript
+cancel(callId: string, reason?: string): Promise<CancelResponse>
+```
+
+**Returns:**
+```typescript
+interface CancelResponse {
+  callId: string;
+  cancelled: boolean;
+  reason?: string;
+}
+```
+
+## Transport Message Format
+
+The `ABPMessage` envelope type is used by postMessage and WebSocket transports:
+
+```typescript
+interface ABPMessage {
+  type: ABPMessageType;
+  id?: string;           // For request-response correlation
+  timestamp: number;     // Unix milliseconds
+  payload: unknown;
+}
+
+type ABPMessageType =
+  // Agent → App
+  | 'initialize'
+  | 'capabilities/call'
+  | 'capabilities/cancel'
+  | 'shutdown'
+  | 'elicitation/response'
+  // App → Agent
+  | 'initialize-result'
+  | 'capabilities/call-result'
+  | 'capabilities/cancel-result'
+  | 'notification'
+  | 'progress'
+  | 'elicitation/request';
+```
+
+### Message Types
+
+| Direction | Type | Purpose |
+|-----------|------|---------|
+| Agent → App | `initialize` | Establish session |
+| App → Agent | `initialize-result` | Session established |
+| Agent → App | `capabilities/call` | Call capability |
+| App → Agent | `capabilities/call-result` | Capability response |
+| Agent → App | `capabilities/cancel` | Cancel in-progress call |
+| App → Agent | `capabilities/cancel-result` | Cancellation result |
+| App → Agent | `notification` | Push event |
+| App → Agent | `progress` | Operation progress |
+| App → Agent | `elicitation/request` | Elicitation from app |
+| Agent → App | `elicitation/response` | Response to elicitation |
+| Agent → App | `shutdown` | End session |
+
+<Note>
+This envelope is used by postMessage and WebSocket transports. Puppeteer transport uses `page.evaluate()` directly.
+</Note>
+
+## Puppeteer Callback Function Names
+
+Client implementations using Puppeteer/Playwright **MUST** use these function names for interoperability:
+
+| Function | Direction | Purpose |
+|----------|-----------|---------|
+| `__abp_notification` | App → Agent | Notifications |
+| `__abp_progress` | App → Agent | Progress updates |
+| `__abp_elicitation` | App → Agent | Elicitation requests |
+| `__abp_capabilities_changed` | App → Agent | Capability changes |
+
+## Types
+
+### Capability
+
+```typescript
+interface Capability {
+  name: string;
+  description: string;
+  inputSchema: JSONSchema;
+  outputSchema: JSONSchema;
+  available: boolean;
+  requirements: Requirement[];
+  features: Record<string, boolean>;
+  experimental?: boolean;
+  deprecated?: boolean;
+  deprecationMessage?: string;
+  alternatives?: string[];
+  browserRequirement?: string;
+}
+```
+
+### Requirement
+
+```typescript
+interface Requirement {
+  type: 'permission' | 'context' | 'gesture' | 'browser' | 'hardware' | 'state';
+  description: string;
+  met: boolean;
+  resolution?: string;
+}
+```
+
+### CapabilitySummary
+
+```typescript
+interface CapabilitySummary {
+  name: string;
+  available: boolean;
+  experimental?: boolean;
+  deprecated?: boolean;
+}
+```
+
+## Standard Error Codes
+
+| Code | Description | Retryable |
+|------|-------------|-----------|
+| `NOT_INITIALIZED` | Session not initialized | Yes |
+| `UNKNOWN_CAPABILITY` | Capability doesn't exist | No |
+| `INVALID_PARAMS` | Parameters don't match schema | No |
+| `PERMISSION_DENIED` | User denied permission | Yes |
+| `REQUIREMENT_NOT_MET` | Capability requirement not satisfied | Depends |
+| `OPERATION_FAILED` | Capability execution failed | Depends |
+| `NOT_SUPPORTED` | Feature not supported | No |
+| `TIMEOUT` | Operation timed out | Yes |
+
+See [Error Handling Guide](/reference/error-handling) for complete details.
+
+## Standard Elicitation Methods
+
+| Method | Description |
+|--------|-------------|
+| `elicitation/input` | Request required user input |
+| `elicitation/preference` | Request optional preference |
+| `elicitation/confirm` | Request yes/no confirmation |
+| `elicitation/select` | Request selection from options |
+| `elicitation/resource` | Request a file or resource |
+| `sampling/create` | Request AI assistance |
+
+See [Elicitation Guide](/concepts/elicitation-and-progress) for details.
+
+## Complete TypeScript Definitions
+
+For reference implementations, here are the complete TypeScript definitions for all ABP types:
+
+### Core ABP Interface
+
+```typescript
+interface ABP {
+  // ─────────────────────────────────────────────────────────────────────────
+  // IDENTITY
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Protocol version implemented */
+  readonly protocolVersion: string;
+
+  /** App identification */
+  readonly app: AppInfo;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // LIFECYCLE
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Initialize a session with the app */
+  initialize(params: InitializeParams): Promise<InitializeResult>;
+
+  /** End the session */
+  shutdown(params?: ShutdownParams): Promise<void>;
+
+  /** Check if a session is initialized */
+  readonly initialized: boolean;
+
+  /** Current session ID (if initialized) */
+  readonly sessionId: string | null;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CAPABILITIES
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** List all available capabilities */
+  listCapabilities(): Promise<Capability[]>;
+
+  /** Get details for a specific capability */
+  describeCapability(name: string): Promise<Capability | null>;
+
+  /** Quick check if capability is supported and available */
+  supports(name: string): Promise<SupportInfo>;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CALLING CAPABILITIES
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Call a capability */
+  call<T = unknown>(
+    capability: string,
+    params?: Record<string, unknown>,
+    options?: CallOptions
+  ): Promise<ABPResponse<T>>;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CANCELLATION
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Cancel an in-progress capability call */
+  cancel(params: CancelParams): Promise<CancelResponse>;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // NOTIFICATIONS (App → Agent)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Send a notification to the agent */
+  notify(event: string, data?: unknown): void;
+
+  /** Send progress update to the agent */
+  notifyProgress(progress: ProgressInfo): void;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ELICITATION (App → Agent)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Request something from the agent via elicitation */
+  elicit<T = unknown>(request: ElicitationRequest): Promise<ElicitationResponse<T>>;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // EVENT HANDLERS (Agent sets these)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Handler for notifications from app */
+  onNotification?: (notification: Notification) => void;
+
+  /** Handler for progress updates from app */
+  onProgress?: (progress: ProgressInfo) => void;
+
+  /** Handler for elicitation requests from app */
+  onElicitation?: (request: ElicitationRequest) => Promise<ElicitationResponse>;
+
+  /** Handler for capability changes */
+  onCapabilitiesChanged?: (changes: CapabilityChanges) => void;
+}
+```
+
+### Identity Types
+
+```typescript
+interface AppInfo {
+  id: string;           // Unique identifier: "vendor.app-name"
+  name: string;         // Human-readable name
+  version: string;      // Semantic version
+  description?: string;
+}
+
+interface AgentInfo {
+  name: string;         // Agent name: "my-agent"
+  version: string;      // Agent version
+}
+```
+
+### Lifecycle Types
+
+```typescript
+interface FeatureFlags {
+  notifications: boolean;
+  progress: boolean;
+  elicitation: boolean;
+  dynamicCapabilities?: boolean;
+}
+
+interface AgentCapabilities {
+  allowedRequests: string[];
+}
+```
+
+### Discovery Types
+
+```typescript
+interface ABPManifest {
+  abp: string;                        // Protocol version, e.g., "1.0"
+  app: ManifestAppInfo;               // App identification
+  capabilities: ManifestCapability[]; // Available capabilities
+}
+
+interface ManifestAppInfo {
+  id: string;           // Unique identifier: "vendor.app-name"
+  name: string;         // Human-readable name
+  version: string;      // Semantic version
+  description?: string; // Brief description
+  homepage?: string;    // App homepage URL
+  icon?: string;        // URL to app icon
+  support?: string;     // Support URL or email
+}
+
+interface ManifestCapability {
+  name: string;              // Capability name, e.g., "convert.markdownToHtml"
+  description?: string;      // Human-readable description
+  inputSchema?: JSONSchema;  // Input parameters schema
+  outputSchema?: JSONSchema; // Output data schema
+  experimental?: boolean;    // Capability is experimental
+  deprecated?: boolean;      // Capability is deprecated
+}
+
+interface DiscoveryResult {
+  supported: boolean;        // Whether app supports ABP
+  manifest?: ABPManifest;    // The manifest (if supported)
+  reason?: string;           // Why discovery failed (if not supported)
+}
+```
+
+### Capability Changes
+
+```typescript
+interface CapabilityChanges {
+  added: string[];
+  removed: string[];
+  changed: string[];
+}
+```
+
+### Cancellation Types
+
+```typescript
+interface CancelParams {
+  callId: string;           // ID of the call to cancel
+  reason?: string;          // Optional reason for logging/debugging
+}
+
+interface CancelResponse {
+  callId: string;           // Echo back the call ID
+  cancelled: boolean;       // Whether cancellation succeeded
+  reason?: string;          // Why cancellation failed (if applicable)
+}
+```
+
+### Binary Data Types
+
+```typescript
+interface BinaryData {
+  // The binary content (format depends on transport)
+  content: string | ArrayBuffer | Blob;
+
+  // REQUIRED: MIME type of the content
+  mimeType: string;
+
+  // REQUIRED when content is a string: encoding used
+  encoding?: 'base64' | 'utf-8';
+
+  // RECOMMENDED: size in bytes
+  size?: number;
+
+  // OPTIONAL: suggested filename
+  filename?: string;
+}
+
+interface BinaryDataReference {
+  // URL to download the content
+  downloadUrl: string;
+
+  // REQUIRED: MIME type
+  mimeType: string;
+
+  // REQUIRED: size in bytes
+  size: number;
+
+  // OPTIONAL: suggested filename
+  filename?: string;
+
+  // OPTIONAL: when the URL expires (Unix timestamp ms)
+  expiresAt?: number;
+
+  // OPTIONAL: authentication for download
+  auth?: BinaryDownloadAuth;
+}
+
+interface BinaryDownloadAuth {
+  type: 'bearer' | 'query';
+  token?: string;           // For query auth
+  header?: string;          // For bearer auth
+}
+
+// Union type for binary responses
+type BinaryOutput = BinaryData | BinaryDataReference;
+```
+
+### Elicitation Method Types
+
+```typescript
+// Standard elicitation method names
+type StandardElicitationMethod =
+  | 'elicitation/input'
+  | 'elicitation/preference'
+  | 'elicitation/confirm'
+  | 'elicitation/select'
+  | 'elicitation/resource'
+  | 'sampling/create';
+
+// elicitation/input
+interface ElicitationInputParams {
+  prompt: string;
+  schema: JSONSchema;
+}
+interface ElicitationInputResponse {
+  value: unknown;
+}
+
+// elicitation/preference
+interface ElicitationPreferenceParams {
+  prompt: string;
+  schema: JSONSchema;
+  default: unknown;
+}
+interface ElicitationPreferenceResponse {
+  value: unknown;
+}
+
+// elicitation/confirm
+interface ElicitationConfirmParams {
+  message: string;
+  destructive?: boolean;
+}
+interface ElicitationConfirmResponse {
+  confirmed: boolean;
+}
+
+// elicitation/select
+interface ElicitationSelectParams {
+  prompt: string;
+  options: Array<{ value: string; label: string }>;
+  default?: string;
+}
+interface ElicitationSelectResponse {
+  selected: string;
+}
+
+// elicitation/resource
+interface ElicitationResourceParams {
+  type: string;
+  uri?: string;
+}
+interface ElicitationResourceResponse {
+  content: string;
+  mimeType: string;
+}
+
+// sampling/create
+interface SamplingCreateParams {
+  task: string;
+  context?: string;
+}
+interface SamplingCreateResponse {
+  result: string;
+}
+```
+
+### JSON Schema (Simplified)
+
+```typescript
+interface JSONSchema {
+  type?: string | string[];
+  properties?: Record<string, JSONSchema>;
+  items?: JSONSchema;
+  required?: string[];
+  enum?: unknown[];
+  const?: unknown;
+  default?: unknown;
+  description?: string;
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  format?: string;
+  [key: string]: unknown;
+}
+```
+
+### Window Declaration
+
+For TypeScript projects, add this to your global declarations:
+
+```typescript
+declare global {
+  interface Window {
+    abp?: ABP;
+  }
+}
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Protocol Overview" icon="sitemap" href="/concepts/protocol-overview">
+    Full specification details
+  </Card>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    Build your first ABP app
+  </Card>
+  <Card title="Examples & Tutorials" icon="code" href="/guides/examples">
+    Working code examples
+  </Card>
+</CardGroup>

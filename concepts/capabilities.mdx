@@ -1,0 +1,155 @@
+---
+title: "Capability Taxonomy"
+description: "Standard namespaces and naming conventions for ABP capabilities"
+icon: "layer-group"
+---
+
+## Overview
+
+ABP uses **dot-notation namespaces** to organize capabilities:
+
+```
+namespace.action
+```
+
+**Examples:**
+- `export.pdf` -- Export as PDF
+- `convert.markdownToHtml` -- Convert markdown to HTML
+- `ai.summarize` -- Summarize text using AI
+- `render.html` -- Render HTML with CSS
+
+## Standard Namespaces
+
+### `export.*` -- Export Operations
+
+| Capability | Description | Input | Output |
+|------------|-------------|-------|--------|
+| `export.pdf` | Generate PDF from HTML content | `{ html, options }` | `BinaryData` (inline `{ document: BinaryData }`, or the client generates a PDF from HTML returned by a `convert.*` capability) |
+| `export.image` | Export as image (PNG, JPEG, SVG) | `{ selector?, format }` | `{ image: BinaryData }` |
+| `export.html` | Export rendered HTML | `{ content, options }` | `{ document: BinaryData }` |
+| `export.markdown` | Export as Markdown | `{ content }` | `{ markdown: string }` |
+
+### `convert.*` -- Format Conversion
+
+| Capability | Description | Input | Output |
+|------------|-------------|-------|--------|
+| `convert.markdownToHtml` | Convert Markdown to HTML | `{ markdown, options }` | `{ html }` |
+| `convert.htmlToMarkdown` | Convert HTML to Markdown | `{ html }` | `{ markdown }` |
+| `convert.htmlToImage` | Render HTML as image | `{ html, options }` | `{ image: BinaryData }` |
+| `convert.csvToJson` | Convert CSV to JSON | `{ csv, options }` | `{ json }` |
+
+### `render.*` -- Rendering Operations
+
+| Capability | Description |
+|------------|-------------|
+| `render.html` | Render HTML with CSS |
+| `render.canvas` | Render to canvas |
+| `render.svg` | Render SVG |
+
+### `ai.*` -- AI Operations
+
+| Capability | Description | Input | Output |
+|------------|-------------|-------|--------|
+| `ai.summarize` | Summarize text | `{ text, maxLength? }` | `{ summary }` |
+| `ai.translate` | Translate text | `{ text, from, to }` | `{ translated }` |
+| `ai.complete` | Text completion | `{ text, style }` | `{ rewritten }` |
+
+### `storage.*` -- Browser Storage
+
+| Capability | Description |
+|------------|-------------|
+| `storage.read` | Read from localStorage/sessionStorage |
+| `storage.write` | Write to localStorage/sessionStorage |
+| `storage.delete` | Delete from storage |
+
+### `auth.*` -- Authentication
+
+| Capability | Description |
+|------------|-------------|
+| `auth.getToken` | Get auth token from browser session |
+| `auth.getUser` | Get current user info |
+
+### Forbidden Capabilities: Delivery and Input-Acquisition Mechanisms
+
+<Warning>
+Apps MUST NOT declare capabilities that wrap browser delivery mechanisms or input-acquisition APIs. These are browser features that route content to an OS-level destination (clipboard, share sheet, file dialog, notification) or acquire input through OS-level UI (file picker, camera prompt). An ABP capability should produce or consume **data** -- the agent handles routing and acquisition on the host side.
+</Warning>
+
+For a decision test to identify these mechanisms, see the [Implementation Guide -- How to Recognize a Delivery Mechanism](/guides/implementation-guide#how-to-recognize-a-delivery-mechanism).
+
+The primary example is `clipboard.*`: apps MUST NOT declare `clipboard.*` capabilities. The browser Clipboard API requires user gestures that automated agents cannot provide, and clipboard is a host-side delivery mechanism -- agents can write to the system clipboard directly using host tools (`pbcopy`, `xclip`, `clip`). Instead, expose the underlying content-producing capability (e.g., `convert.markdownToHtml`) and let the agent handle clipboard operations on the host side. The same principle applies to `navigator.share()`, `showSaveFilePicker()` / `showOpenFilePicker()`, `new Notification()`, and any future browser API that triggers OS-level UI.
+
+See the [Protocol Overview](/concepts/protocol-overview) for additional context on forbidden capabilities.
+
+## Vendor Namespaces
+
+Vendors can use reverse-domain notation for custom capabilities:
+
+```
+vendorDomain.namespace.action
+```
+
+**Examples:**
+- `com.acme.imageFilter.blur`
+- `io.github.username.customTool`
+
+## Naming Conventions
+
+### Action Verbs
+
+Use consistent action verbs:
+
+- **Create/Generate:** `export.pdf`, `generate.thumbnail`
+- **Read/Get:** `storage.read`, `auth.getToken`
+- **Write/Set:** `storage.write`, `storage.set`
+- **Convert/Transform:** `convert.markdownToHtml`
+- **Delete/Remove:** `storage.delete`
+
+### Case Convention
+
+- Use `camelCase` for multi-word names
+- Namespace and action are separated by `.`
+- Examples: `convert.markdownToHtml`, `auth.getToken`
+
+## Capability Lifecycle
+
+Capabilities progress through three stages:
+
+```
+Experimental → Stable → Deprecated → Removed
+```
+
+### Experimental
+
+- Marked with `experimental: true` in the manifest
+- May change without notice between versions
+- Agents SHOULD warn users when calling experimental capabilities
+
+### Stable
+
+- The default state (no `experimental` or `deprecated` flag)
+- Follow semantic versioning
+- Breaking changes only in major protocol versions
+
+### Deprecated
+
+- Marked with `deprecated: true` and optionally `deprecationMessage`
+- **Deprecated capabilities MUST remain functional for at least one major version**
+- The `alternatives` field SHOULD suggest replacement capabilities
+- Agents SHOULD warn users when calling deprecated capabilities
+
+See the [Protocol Overview](/concepts/protocol-overview) for the full lifecycle details.
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Examples & Tutorials" icon="graduation-cap" href="/guides/examples">
+    See capabilities in action
+  </Card>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    Build your own app with capabilities
+  </Card>
+  <Card title="Protocol Overview" icon="diagram-project" href="/concepts/protocol-overview">
+    Full specification details
+  </Card>
+</CardGroup>

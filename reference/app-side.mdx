@@ -1,0 +1,424 @@
+---
+title: "App-Side Implementation"
+description: "Advanced guide for implementing ABP in web applications"
+icon: "window-maximize"
+---
+
+Advanced guide for implementing ABP in web applications.
+
+<Note>
+**Start here:** [ABP Implementation Guide](/guides/implementation-guide) for the core implementation process. For a minimal quick start, see [Building ABP Apps](/guides/building-web-apps).
+</Note>
+
+## Architecture Patterns
+
+### Modular ABP Runtime
+
+Organize your ABP implementation into modules:
+
+```
+src/
+├── abp/
+│   ├── runtime.js           # Main ABP runtime
+│   ├── capabilities/
+│   │   ├── export.js        # Export capabilities
+│   │   └── convert.js       # Conversion capabilities
+│   ├── session.js           # Session management
+│   ├── validator.js         # Schema validation
+│   └── manifest.js          # Manifest generation
+└── app.js                   # Your main app
+```
+
+### Capability Registry Pattern
+
+```javascript
+// capabilities/registry.js
+export const capabilityRegistry = {
+  'convert.markdownToHtml': {
+    handler: convertMarkdownToHtml,
+    schema: convertMarkdownToHtmlSchema,
+    requirements: ['secure-context']
+  },
+  'export.pdf': {
+    handler: exportPdf,
+    schema: exportPdfSchema,
+    requirements: ['window-focus']
+  }
+};
+
+// runtime.js
+async call(capability, params) {
+  const registration = capabilityRegistry[capability];
+
+  if (!registration) {
+    return { success: false, error: { code: 'UNKNOWN_CAPABILITY', ... } };
+  }
+
+  // Validate params against schema
+  const validation = validate(params, registration.schema);
+  if (!validation.valid) {
+    return { success: false, error: { code: 'INVALID_PARAMS', ... } };
+  }
+
+  // Check requirements
+  for (const req of registration.requirements) {
+    if (!checkRequirement(req)) {
+      return { success: false, error: { code: 'REQUIREMENT_NOT_MET', ... } };
+    }
+  }
+
+  // Execute handler
+  return await registration.handler(params);
+}
+```
+
+## Advanced Capability Implementation
+
+### Progress Reporting
+
+```javascript
+async function exportPdf({ html, options }, { progressToken } = {}) {
+  const pages = paginateHtml(html);
+  const total = pages.length;
+
+  for (let i = 0; i < total; i++) {
+    await renderPage(pages[i]);
+
+    if (progressToken && window.__abp_progress) {
+      window.__abp_progress({
+        operationId: progressToken,
+        progress: i + 1,
+        total,
+        percentage: Math.round(((i + 1) / total) * 100),
+        status: `Rendering page ${i + 1} of ${total}`,
+        stage: 'rendering',
+        estimatedRemaining: (total - i - 1) * 1000  // ~1s per page
+      });
+    }
+  }
+
+  const pdfBlob = await finalizePdf();
+  return {
+    success: true,
+    data: {
+      pdf: await blobToBase64(pdfBlob),
+      mimeType: 'application/pdf',
+      pageCount: total
+    }
+  };
+}
+```
+
+### Elicitation
+
+```javascript
+async function exportCustomPdf({ html }) {
+  // Request user preferences
+  const sizeResponse = await window.__abp_elicitation({
+    method: 'elicitation/select',
+    params: {
+      prompt: 'Select page size',
+      options: [
+        { value: 'letter', label: 'Letter (8.5" x 11")' },
+        { value: 'a4', label: 'A4 (210mm x 297mm)' },
+        { value: 'legal', label: 'Legal (8.5" x 14")' }
+      ],
+      default: 'letter'
+    }
+  });
+
+  if (!sizeResponse.success) {
+    return { success: false, error: { code: 'ELICITATION_FAILED', ... } };
+  }
+
+  const pageSize = sizeResponse.data.selected;
+
+  // Generate PDF with selected size
+  const pdf = await generatePdf(html, { pageSize });
+
+  return {
+    success: true,
+    data: {
+      pdf: await blobToBase64(pdf),
+      pageSize
+    }
+  };
+}
+```
+
+### Cancellation Support
+
+```javascript
+class ABPRuntime {
+  constructor() {
+    this.activeOperations = new Map();
+  }
+
+  async call(capability, params, options = {}) {
+    const callId = options.callId || crypto.randomUUID();
+    const controller = new AbortController();
+
+    this.activeOperations.set(callId, controller);
+
+    try {
+      const result = await this.executeCapability(
+        capability,
+        params,
+        { ...options, signal: controller.signal }
+      );
+      return result;
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        return { success: false, cancelled: true };
+      }
+      throw error;
+    } finally {
+      this.activeOperations.delete(callId);
+    }
+  }
+
+  async cancel(callId, reason) {
+    const controller = this.activeOperations.get(callId);
+
+    if (!controller) {
+      return { callId, cancelled: false, reason: 'Not found' };
+    }
+
+    controller.abort(reason);
+    return { callId, cancelled: true };
+  }
+
+  async executeCapability(capability, params, { signal } = {}) {
+    // Pass signal to capability handlers
+    // Check signal.aborted periodically in long operations
+    if (signal?.aborted) {
+      throw new DOMException('Cancelled', 'AbortError');
+    }
+
+    // ... execute capability
+  }
+}
+```
+
+## State Management
+
+### Session State
+
+```javascript
+class SessionManager {
+  constructor() {
+    this.sessions = new Map();
+  }
+
+  create(agentInfo) {
+    const sessionId = crypto.randomUUID();
+    const session = {
+      id: sessionId,
+      agent: agentInfo,
+      createdAt: Date.now(),
+      lastActivity: Date.now(),
+      state: {}
+    };
+
+    this.sessions.set(sessionId, session);
+    return session;
+  }
+
+  get(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.lastActivity = Date.now();
+    }
+    return session;
+  }
+
+  cleanup() {
+    const now = Date.now();
+    const timeout = 30 * 60 * 1000;  // 30 minutes
+
+    for (const [id, session] of this.sessions) {
+      if (now - session.lastActivity > timeout) {
+        this.sessions.delete(id);
+      }
+    }
+  }
+}
+```
+
+## Testing
+
+### Unit Tests
+
+```javascript
+// Test capability implementation
+describe('convertMarkdownToHtml', () => {
+  it('should convert markdown to HTML', async () => {
+    const result = await abp.call('convert.markdownToHtml', {
+      markdown: '# Hello World',
+      options: { sanitize: true }
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data.html).toContain('<h1>Hello World</h1>');
+  });
+
+  it('should reject missing markdown parameter', async () => {
+    const result = await abp.call('convert.markdownToHtml', {
+      options: { sanitize: true }
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error.code).toBe('INVALID_PARAMS');
+  });
+});
+```
+
+### Integration Tests
+
+Test with the MCP Bridge:
+
+```javascript
+const puppeteer = require('puppeteer');
+
+describe('ABP Integration', () => {
+  let browser, page;
+
+  beforeAll(async () => {
+    browser = await puppeteer.launch({ headless: false });
+    page = await browser.newPage();
+    await page.goto('http://localhost:3000');
+  });
+
+  afterAll(async () => {
+    await browser.close();
+  });
+
+  it('should initialize session', async () => {
+    const session = await page.evaluate(async () => {
+      return await window.abp.initialize({
+        agent: { name: 'test', version: '1.0' },
+        protocolVersion: '0.1',
+        features: { notifications: false, progress: false, elicitation: false }
+      });
+    });
+
+    expect(session.sessionId).toBeDefined();
+    expect(session.capabilities.length).toBeGreaterThan(0);
+  });
+});
+```
+
+## Performance Optimization
+
+### Lazy Loading Capabilities
+
+```javascript
+const capabilityLoaders = {
+  'ai.summarize': () => import('./capabilities/ai.js'),
+  'export.pdf': () => import('./capabilities/pdf.js')
+};
+
+async call(capability, params) {
+  const loader = capabilityLoaders[capability];
+
+  if (loader) {
+    const module = await loader();
+    return await module.handler(params);
+  }
+
+  // ... fallback
+}
+```
+
+### Caching
+
+```javascript
+class CapabilityCache {
+  constructor(ttl = 60000) {
+    this.cache = new Map();
+    this.ttl = ttl;
+  }
+
+  get(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+
+    if (Date.now() - entry.timestamp > this.ttl) {
+      this.cache.delete(key);
+      return null;
+    }
+
+    return entry.value;
+  }
+
+  set(key, value) {
+    this.cache.set(key, { value, timestamp: Date.now() });
+  }
+}
+```
+
+## Security Considerations
+
+See [Security Guide](/concepts/security) for complete details.
+
+### Input Validation
+
+Always validate inputs against schemas:
+
+```javascript
+import Ajv from 'ajv';
+
+const ajv = new Ajv();
+
+function validateParams(params, schema) {
+  const validate = ajv.compile(schema);
+  const valid = validate(params);
+
+  if (!valid) {
+    return {
+      valid: false,
+      errors: validate.errors
+    };
+  }
+
+  return { valid: true };
+}
+```
+
+### Rate Limiting
+
+```javascript
+class RateLimiter {
+  constructor(maxCalls = 100, window = 60000) {
+    this.calls = [];
+    this.maxCalls = maxCalls;
+    this.window = window;
+  }
+
+  check() {
+    const now = Date.now();
+    this.calls = this.calls.filter(t => now - t < this.window);
+
+    if (this.calls.length >= this.maxCalls) {
+      return false;
+    }
+
+    this.calls.push(now);
+    return true;
+  }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    Quick start guide
+  </Card>
+  <Card title="Security Guide" icon="shield" href="/concepts/security">
+    Security best practices
+  </Card>
+  <Card title="Examples" icon="code" href="/guides/examples">
+    Working code examples
+  </Card>
+</CardGroup>

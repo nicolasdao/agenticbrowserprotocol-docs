@@ -1,0 +1,557 @@
+---
+title: "Architecture"
+description: "How the Agentic Browser Protocol works from end to end"
+icon: "sitemap"
+---
+
+ABP follows a **client-server** architecture where web applications (servers) expose capabilities through a standardized interface, and agents (clients) consume them.
+
+## System Overview
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│                        SYSTEM ARCHITECTURE                        │
+├───────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  ┌──────────────────────────┐                                     │
+│  │      AI Agent            │  (Any MCP-compatible agent, etc.)   │
+│  │  (End User)              │                                     │
+│  └────────────┬─────────────┘                                     │
+│               │                                                   │
+│               │ MCP Protocol (or direct ABP)                      │
+│               ▼                                                   │
+│  ┌──────────────────────────┐                                     │
+│  │   ABP Client             │  (MCP Bridge, Python client, etc.)  │
+│  │  (Implementation)        │                                     │
+│  │                          │                                     │
+│  │  - Manages browser       │                                     │
+│  │  - Handles discovery     │                                     │
+│  │  - Routes data           │                                     │
+│  │  - Manages session       │                                     │
+│  └────────────┬─────────────┘                                     │
+│               │                                                   │
+│               │ Transport (Puppeteer, postMessage, WebSocket)     │
+│               ▼                                                   │
+│  ┌──────────────────────────┐                                     │
+│  │      Browser             │  (Chrome/Firefox)                   │
+│  │                          │                                     │
+│  │  window.abp ─────────────┼─────────┐                           │
+│  └──────────────────────────┘         │                           │
+│               │                        │                           │
+│               │                        ▼                           │
+│               │           ┌──────────────────────────┐             │
+│               │           │   Web Application        │             │
+│               │           │   (ABP Server)           │             │
+│               │           │                          │             │
+│               │           │  - Implements window.abp │             │
+│               │           │  - Exposes capabilities  │             │
+│               │           │  - Serves manifest       │             │
+│               └──────────▶│  - Handles calls         │             │
+│                           └──────────────────────────┘             │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+## Components
+
+### 1. Web Application or Chrome Extension (ABP Server)
+
+The ABP server implements the ABP interface and exposes capabilities. It can be either a **web application** served at an HTTP URL or a **Chrome extension** loaded from a local directory.
+
+#### Web Application
+
+**Responsibilities:**
+- Expose `window.abp` with required methods (`initialize`, `shutdown`, `call`)
+- Serve an ABP manifest at a discoverable URL
+- Validate capability inputs against declared schemas
+- Execute capabilities using browser APIs
+- Send notifications and progress updates
+- Handle elicitation requests from agents
+
+**Key Files:**
+- `index.html` -- Contains `<link rel="abp-manifest" href="...">`
+- `abp.json` -- Manifest describing app and capabilities
+- `abp-runtime.js` -- Implementation of `window.abp`
+
+See [Building ABP Apps](/guides/building-web-apps) for a complete guide.
+
+#### Chrome Extension
+
+Chrome extensions can also serve as ABP servers, exposing privileged `chrome.*` APIs (tabs, scripting, bookmarks, etc.) as capabilities.
+
+**Responsibilities:**
+- Expose `window.abp` on an extension page (`abp-app.html`)
+- Implement capabilities that wrap `chrome.*` APIs
+- Declare required permissions in extension `manifest.json`
+
+**Key Files:**
+- `manifest.json` -- Chrome extension manifest (Manifest V3) with permissions
+- `background.js` -- Service worker (minimal, required by Chrome)
+- `abp-app.html` -- ABP entry page (navigated to by bridge)
+- `abp-runtime.js` -- Implementation of `window.abp` with `chrome.*` API calls
+
+<Note>
+Extensions skip HTTP-based manifest discovery. The client launches the browser with `--load-extension`, discovers the extension ID from browser targets, and navigates directly to the ABP page. Capability discovery happens entirely at runtime via `initialize()` and `listCapabilities()`.
+</Note>
+
+See [Chrome Extension Guide](/guides/chrome-extensions) for a complete guide.
+
+### 2. ABP Client (Implementation)
+
+The client is a piece of software that connects to ABP apps on behalf of agents. Client implementations are **separate projects** from the ABP specification.
+
+**Responsibilities:**
+- Discover ABP support (fetch HTML, parse manifest link, fetch manifest)
+- Launch and manage browser lifecycle
+- Initialize ABP sessions
+- Call capabilities and handle responses
+- Route data efficiently (large outputs to files, not through agent context)
+- Handle notifications, progress, and elicitation
+- Expose capabilities in a format the agent understands (e.g., MCP tools)
+
+**Reference Implementation:**
+The [ABP MCP Bridge](/guides/mcp-bridge-architecture) is a generic client that works with any ABP app and exposes capabilities as MCP tools.
+
+**Other Potential Clients:**
+- Python library for ABP
+- Rust CLI for ABP
+- Language-specific SDKs
+
+### 3. AI Agent (End User)
+
+The agent is the end user of ABP capabilities. The agent typically has no knowledge of ABP internals -- it just sees tools (e.g., MCP tools) that the client provides.
+
+**Agent's View:**
+```
+Available tools:
+- abp_connect(url | extensionPath)
+- abp_call(capability, params)
+- abp_disconnect()
+- abp_status()
+```
+
+The client handles all ABP complexity (browser management, session lifecycle, data flow).
+
+### 4. Browser
+
+The browser is the runtime environment for ABP apps. ABP requires a **headful browser** (visible window) for full capability access.
+
+**Why Headful?**
+- User's authenticated sessions (cookies, localStorage) are in their profile
+- GPU/WebGL/WebGPU need hardware access
+- Permission prompts (camera, microphone) need user interaction
+- PDF rendering and canvas operations require a full browser environment
+
+**Supported Browsers:**
+- Chrome/Chromium (via Puppeteer)
+- Firefox (via Playwright)
+- Any modern browser with WebDriver support
+
+## Integration Model
+
+ABP uses a **contract-and-client** architecture, similar to gRPC:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                   CONTRACT-AND-CLIENT MODEL                   │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌─────────────────────┐                                     │
+│  │  ABP Specification  │  ← The Contract (this repo)         │
+│  │                     │    Defines: manifest format,        │
+│  │  - Manifest format  │    window.abp interface,            │
+│  │  - window.abp API   │    message types, lifecycle         │
+│  │  - Message types    │                                     │
+│  │  - Session lifecycle│                                     │
+│  └──────────┬──────────┘                                     │
+│             │                                                │
+│     ┌───────┴────────┐                                       │
+│     │                │                                       │
+│     ▼                ▼                                       │
+│  ┌──────────┐  ┌─────────────────┐                           │
+│  │ Web App  │  │ Client Impl     │  ← Separate Projects     │
+│  │ (server) │  │ (MCP Bridge,    │                           │
+│  │          │  │  Python client, │                           │
+│  │          │  │  Rust client)   │                           │
+│  └──────────┘  └─────────────────┘                           │
+│                                                              │
+│  Implements    Implements                                    │
+│  server-side   client-side                                   │
+│  of contract   of contract                                   │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Analogy to gRPC:**
+
+| gRPC | ABP |
+|------|-----|
+| `.proto` file | ABP Specification |
+| Server implementation | Web app with `window.abp` |
+| Client stub (Go, Python, etc.) | Client implementation (MCP Bridge, etc.) |
+
+**What this means:**
+- **Web developers** implement the server side (once)
+- **Client developers** build reusable tools that work with ANY ABP app
+- **End users** just point a client at a URL
+
+## Communication Flow
+
+### Initialization Flow
+
+```
+Agent                 Client                 Browser                 App
+  │                     │                       │                     │
+  │  1. "Use app XYZ"   │                       │                     │
+  │────────────────────▶│                       │                     │
+  │                     │                       │                     │
+  │                     │  2. Fetch HTML head   │                     │
+  │                     │───────────────────────┼────────────────────▶│
+  │                     │◀──────────────────────┼─────────────────────│
+  │                     │  <link rel="abp-manifest">                  │
+  │                     │                       │                     │
+  │                     │  3. Fetch manifest    │                     │
+  │                     │───────────────────────┼────────────────────▶│
+  │                     │◀──────────────────────┼─────────────────────│
+  │                     │  { abp, app, capabilities }                 │
+  │                     │                       │                     │
+  │                     │  4. Launch browser    │                     │
+  │                     │──────────────────────▶│                     │
+  │                     │                       │                     │
+  │                     │  5. Load app URL      │                     │
+  │                     │──────────────────────▶│                     │
+  │                     │                       │  6. Load HTML/JS    │
+  │                     │                       │────────────────────▶│
+  │                     │                       │  window.abp ready   │
+  │                     │                       │                     │
+  │                     │  7. initialize()      │                     │
+  │                     │───────────────────────┼────────────────────▶│
+  │                     │◀──────────────────────┼─────────────────────│
+  │                     │  { sessionId, capabilities, features }      │
+  │                     │                       │                     │
+  │                     │  8. Register tools    │                     │
+  │                     │  (based on caps)      │                     │
+  │                     │                       │                     │
+  │  9. Tools available │                       │                     │
+  │◀────────────────────│                       │                     │
+  │                     │                       │                     │
+```
+
+### Capability Call Flow
+
+```
+Agent                 Client                 Browser                 App
+  │                     │                       │                     │
+  │  1. Call tool       │                       │                     │
+  │────────────────────▶│                       │                     │
+  │                     │                       │                     │
+  │                     │  2. page.evaluate()   │                     │
+  │                     │  window.abp.call()    │                     │
+  │                     │───────────────────────┼────────────────────▶│
+  │                     │                       │  3. Validate params │
+  │                     │                       │  4. Execute         │
+  │                     │                       │  5. Return data     │
+  │                     │◀──────────────────────┼─────────────────────│
+  │                     │  { success, data }    │                     │
+  │                     │                       │                     │
+  │                     │  6. Route data        │                     │
+  │                     │  (large → file,       │                     │
+  │                     │   small → inline)     │                     │
+  │                     │                       │                     │
+  │  7. Result          │                       │                     │
+  │◀────────────────────│                       │                     │
+  │                     │                       │                     │
+```
+
+### Bidirectional Communication
+
+```
+Agent                 Client                 Browser                 App
+  │                     │                       │                     │
+  │                     │  Notification         │                     │
+  │                     │◀──────────────────────┼─────────────────────│
+  │  Update             │  __abp_notification   │  abp.notify()      │
+  │◀────────────────────│                       │                     │
+  │                     │                       │                     │
+  │                     │  Progress             │                     │
+  │                     │◀──────────────────────┼─────────────────────│
+  │  Show progress      │  __abp_progress       │  abp.notifyProgress()│
+  │◀────────────────────│                       │                     │
+  │                     │                       │                     │
+  │                     │  Elicitation Request  │                     │
+  │                     │◀──────────────────────┼─────────────────────│
+  │  Prompt user        │  __abp_elicitation    │  abp.elicit()      │
+  │◀────────────────────│                       │                     │
+  │                     │                       │                     │
+  │  User response      │                       │                     │
+  │────────────────────▶│                       │                     │
+  │                     │  Return response      │                     │
+  │                     │───────────────────────┼────────────────────▶│
+  │                     │                       │  { success, data }  │
+  │                     │                       │                     │
+```
+
+## Data Flow
+
+One of the key responsibilities of the client is **intelligent data routing**.
+
+### Problem: Context Bloat
+
+If all capability outputs flow through the agent's context window:
+- Large PDFs, images, HTML documents consume tokens
+- Agent performance degrades
+- Context limits are hit quickly
+
+### Solution: Smart Routing
+
+The client routes data based on size and type:
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                     DATA FLOW ROUTING                      │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│  App returns result                                        │
+│  { success: true, data: { pdf: "base64..." } }            │
+│         │                                                  │
+│         ▼                                                  │
+│  ┌──────────────────┐                                      │
+│  │ Client analyzes  │                                      │
+│  │ response size    │                                      │
+│  └────────┬─────────┘                                      │
+│           │                                                │
+│     ┌─────┴──────┐                                         │
+│     │            │                                         │
+│     ▼            ▼                                         │
+│  Small         Large                                       │
+│  (< 50KB)      (> 50KB)                                    │
+│     │            │                                         │
+│     │            ▼                                         │
+│     │        ┌──────────────────┐                          │
+│     │        │ Save to file     │                          │
+│     │        │ /tmp/output.pdf  │                          │
+│     │        └────────┬─────────┘                          │
+│     │                 │                                    │
+│     │                 ▼                                    │
+│     │        Return reference                              │
+│     │        { filePath: "/tmp/output.pdf" }               │
+│     │                 │                                    │
+│     ▼                 ▼                                    │
+│  ┌────────────────────────────┐                            │
+│  │ Agent receives result      │                            │
+│  │ - Small: inline data       │                            │
+│  │ - Large: file path         │                            │
+│  └────────────────────────────┘                            │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Routing Rules (MCP Bridge Reference)
+
+The ABP MCP Bridge uses these rules:
+
+| Data Type | Size | Routing |
+|-----------|------|---------|
+| Binary (PDF, images, etc.) | Any | File (Base64 to binary) |
+| Text | < 50KB | Inline |
+| Text | > 50KB | File |
+| JSON objects | < 50KB | Inline |
+| JSON objects | > 50KB | File |
+
+See [Data Flow & Binary Handling](/concepts/data-flow) for complete details.
+
+## Session Management
+
+### Session States
+
+```
+┌──────────────┐   initialize()   ┌─────────────┐
+│ Uninitialized│ ────────────────▶│ Initialized │
+└──────────────┘                  └─────────────┘
+       ▲                                 │
+       │            shutdown()           │
+       └─────────────────────────────────┘
+```
+
+### Session Lifecycle
+
+<Steps>
+  <Step title="Discovery (optional)">
+    - **Web apps:** Fetch HTML, parse manifest link, fetch manifest, check capabilities
+    - **Chrome extensions:** Skip HTTP discovery -- launch browser with `--load-extension`, discover extension ID from browser targets
+    - Decide whether to proceed
+  </Step>
+  <Step title="Browser Launch">
+    - Client launches browser (headless by default)
+    - **Web apps:** Navigates to app URL
+    - **Extensions:** Navigates to `chrome-extension://ID/abp-app.html`
+    - Waits for page load
+  </Step>
+  <Step title="Session Initialization">
+    - Call `window.abp.initialize()`
+    - Negotiate protocol version, features
+    - Receive capability list
+  </Step>
+  <Step title="Active Session">
+    - Call capabilities via `window.abp.call()`
+    - Receive notifications, progress updates
+    - Handle elicitation requests
+  </Step>
+  <Step title="Session Shutdown">
+    - Call `window.abp.shutdown()`
+    - App cleans up resources
+    - Client closes browser
+  </Step>
+</Steps>
+
+### Multiple Sessions
+
+A single browser can host multiple ABP sessions if apps support it. However, the typical pattern is:
+- One browser instance per client
+- One session at a time
+- Clean shutdown before connecting to a different app
+
+## Browser Requirements
+
+### Headful vs Headless
+
+Many ABP capabilities work in **headless mode**, which is the default for most client implementations. However, some capabilities require **headful mode** (a visible browser window):
+
+- User sessions (cookies, localStorage) that need the user's profile
+- GPU/WebGL/WebGPU that need hardware access
+- Permission prompts that need user interaction
+
+```javascript
+// Headless (default) — works for most capabilities
+const browser = await puppeteer.launch({ headless: true });
+
+// Headful — needed for authenticated sessions, GPU, permissions
+const browser = await puppeteer.launch({ headless: false });
+```
+
+<Tip>
+Client implementations SHOULD default to headless and allow headful mode as an option.
+</Tip>
+
+### Browser Automation Setup
+
+**Puppeteer Example:**
+```javascript
+import puppeteer from 'puppeteer';
+
+const browser = await puppeteer.launch({
+  headless: false,
+  args: [
+    '--no-sandbox',           // For containerized environments
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage' // For low-memory environments
+  ]
+});
+
+const page = await browser.newPage();
+
+// Set up notification handlers BEFORE loading the app
+await page.exposeFunction('__abp_notification', (notification) => {
+  handleNotification(notification);
+});
+
+await page.exposeFunction('__abp_progress', (progress) => {
+  handleProgress(progress);
+});
+
+await page.exposeFunction('__abp_elicitation', async (request) => {
+  return await handleElicitation(request);
+});
+
+// Now load the app
+await page.goto('https://app.example.com');
+
+// Wait for window.abp to be available
+await page.waitForFunction(() => typeof window.abp !== 'undefined');
+
+// Initialize session
+const session = await page.evaluate(async () => {
+  return await window.abp.initialize({
+    agent: { name: 'my-agent', version: '1.0.0' },
+    protocolVersion: '0.1',
+    features: { notifications: true, progress: true, elicitation: true }
+  });
+});
+
+console.log('Session ID:', session.sessionId);
+console.log('Capabilities:', session.capabilities);
+```
+
+## Client Implementations
+
+### Reference: ABP MCP Bridge
+
+The [ABP MCP Bridge](/guides/mcp-bridge-architecture) is a complete reference implementation showing:
+
+- **Discovery:** Fetching manifests, parsing capabilities
+- **Browser Management:** Launching, page handling, cleanup
+- **Session Management:** Initialize, shutdown, state tracking
+- **Data Flow:** Smart routing (large outputs to files)
+- **Tool Generation:** Dynamic MCP tool creation from capabilities
+- **Event Handling:** Notifications, progress, elicitation
+- **Error Handling:** Retries, graceful degradation
+
+**Key Modules:**
+```
+abp-mcp-bridge/src/
+├── bridge/
+│   ├── ABPBridgeManager.ts      # Main orchestration
+│   ├── BrowserManager.ts        # Browser lifecycle
+│   ├── ABPSessionManager.ts     # Session management
+│   ├── DataFlowManager.ts       # Data routing
+│   └── CapabilityRegistry.ts    # Capability tracking
+├── tools/
+│   ├── static-tools.ts          # Static MCP tools
+│   └── dynamic-tool-factory.ts  # Dynamic tool generation
+├── handlers/
+│   ├── notification-handler.ts  # Notification processing
+│   ├── progress-handler.ts      # Progress updates
+│   └── elicitation-handler.ts   # Elicitation requests
+└── utils/
+    ├── manifest-fetcher.ts      # Discovery
+    └── binary-utils.ts          # Binary data handling
+```
+
+See [MCP Bridge Architecture](/guides/mcp-bridge-architecture) for details.
+
+### Building Custom Clients
+
+If you're building a client in another language or for a different environment:
+
+1. **Follow the specification:** [Protocol Overview](/concepts/protocol-overview)
+2. **Study the reference:** [ABP MCP Bridge](/guides/mcp-bridge-architecture)
+3. **Use the same patterns:**
+   - Discovery before browser launch
+   - Headful browser mode
+   - Smart data routing
+   - Proper error handling
+
+See [Client-Side Implementation Guide](/reference/client-side) for details.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Common Pitfalls" icon="triangle-exclamation" href="/guides/common-pitfalls">
+    Mistakes that cause silent failures -- critical reading
+  </Card>
+  <Card title="Conformance Requirements" icon="clipboard-check" href="/reference/conformance">
+    Verify your implementation is compliant
+  </Card>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    Create your first ABP application
+  </Card>
+  <Card title="MCP Bridge Quick Start" icon="bolt" href="/guides/mcp-bridge-quickstart">
+    Get up and running with the MCP Bridge
+  </Card>
+  <Card title="API Reference" icon="code" href="/reference/api">
+    Read the full specification
+  </Card>
+  <Card title="MCP Bridge Architecture" icon="sitemap" href="/guides/mcp-bridge-architecture">
+    See the reference implementation details
+  </Card>
+</CardGroup>

@@ -1,0 +1,499 @@
+---
+title: "Security Considerations"
+description: "Security model and best practices for ABP implementations"
+icon: "shield-halved"
+---
+
+## Overview
+
+ABP operates in a browser context with access to sensitive capabilities (storage, authenticated sessions, canvas rendering). Proper security measures are essential.
+
+## Threat Model
+
+### For Web Applications
+
+**Threats:**
+1. **Malicious agents** calling capabilities without user consent
+2. **Data exfiltration** via storage or network access
+3. **XSS attacks** exploiting ABP interface
+4. **CSRF attacks** triggering capabilities from other origins
+5. **Resource exhaustion** from repeated capability calls
+
+### For Clients/Bridges
+
+**Threats:**
+1. **Malicious apps** exploiting client vulnerabilities
+2. **Data injection** via crafted responses
+3. **Browser exploitation** through malicious page content
+4. **Man-in-the-middle** attacks on manifest/app connections
+
+## Security Best Practices
+
+### For App Developers
+
+#### 1. Input Validation
+
+**Always validate inputs against schemas:**
+
+```javascript
+import Ajv from 'ajv';
+
+const ajv = new Ajv();
+
+async function call(capability, params) {
+  const schema = getCapabilitySchema(capability);
+  const validate = ajv.compile(schema);
+
+  if (!validate(params)) {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_PARAMS',
+        message: ajv.errorsText(validate.errors),
+        retryable: false
+      }
+    };
+  }
+
+  // Proceed with validated params
+}
+```
+
+#### 2. Rate Limiting
+
+**Prevent abuse with rate limits:**
+
+```javascript
+class RateLimiter {
+  constructor(maxCalls = 100, windowMs = 60000) {
+    this.calls = [];
+    this.maxCalls = maxCalls;
+    this.windowMs = windowMs;
+  }
+
+  check() {
+    const now = Date.now();
+    this.calls = this.calls.filter(t => now - t < this.windowMs);
+
+    if (this.calls.length >= this.maxCalls) {
+      return false;
+    }
+
+    this.calls.push(now);
+    return true;
+  }
+}
+
+// Usage
+const limiter = new RateLimiter(100, 60000);  // 100 calls/minute
+
+async function call(capability, params) {
+  if (!limiter.check()) {
+    return {
+      success: false,
+      error: {
+        code: 'RATE_LIMITED',
+        message: 'Too many requests',
+        retryable: true,
+        retryAfter: 60000
+      }
+    };
+  }
+
+  // Proceed
+}
+```
+
+#### 3. Content Security Policy
+
+**Restrict what scripts can run:**
+
+```html
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self' https:">
+```
+
+#### 4. Sanitize Outputs
+
+**Prevent XSS in generated content:**
+
+```javascript
+import DOMPurify from 'dompurify';
+
+async function convertMarkdown({ markdown }) {
+  const html = marked.parse(markdown);
+  const sanitized = DOMPurify.sanitize(html);
+
+  return {
+    success: true,
+    data: { html: sanitized }
+  };
+}
+```
+
+#### 5. Limit Sensitive Capabilities
+
+**Mark sensitive capabilities as unavailable by default:**
+
+```javascript
+async initialize(params) {
+  return {
+    capabilities: [
+      { name: 'convert.markdownToHtml', available: true },
+      { name: 'export.pdf', available: true },
+      { name: 'storage.read', available: false }     // Requires permission
+    ]
+  };
+}
+```
+
+#### 6. CORS for Manifests
+
+**Only allow specific origins:**
+
+```javascript
+// Express example
+app.get('/abp.json', (req, res) => {
+  res.header('Access-Control-Allow-Origin', 'https://trusted-agent.example.com');
+  res.json(manifest);
+});
+```
+
+### For Client/Bridge Developers
+
+#### 1. Validate Manifest
+
+**Check manifest before trusting it:**
+
+```javascript
+function validateManifest(manifest) {
+  if (!manifest.abp || !manifest.app || !manifest.capabilities) {
+    throw new Error('Invalid manifest structure');
+  }
+
+  if (manifest.capabilities.length > 100) {
+    throw new Error('Too many capabilities (potential DoS)');
+  }
+
+  // Validate each capability
+  for (const cap of manifest.capabilities) {
+    if (!cap.name || typeof cap.name !== 'string') {
+      throw new Error('Invalid capability name');
+    }
+  }
+
+  return true;
+}
+```
+
+#### 2. Isolate Browser Context
+
+**Use sandboxed browser instances:**
+
+```javascript
+const browser = await puppeteer.launch({
+  headless: false,
+  args: [
+    '--no-sandbox',              // Only in controlled environments
+    '--disable-dev-shm-usage'
+  ]
+});
+
+// Use a new context per connection
+const context = await browser.createIncognitoBrowserContext();
+const page = await context.newPage();
+```
+
+#### 3. Limit Permissions
+
+**Only grant necessary permissions:**
+
+```javascript
+await context.overridePermissions(url, [
+  'notifications'
+  // Don't grant: 'geolocation', 'camera', 'microphone', etc.
+]);
+```
+
+#### 4. Timeout Protection
+
+**Prevent hanging operations:**
+
+```javascript
+async function callCapability(capability, params, timeout = 30000) {
+  return Promise.race([
+    abp.call(capability, params),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout')), timeout)
+    )
+  ]);
+}
+```
+
+#### 5. Validate Responses
+
+**Check responses for injection attempts:**
+
+```javascript
+function validateResponse(response) {
+  // Check for script injection in strings
+  if (typeof response.data === 'object') {
+    const json = JSON.stringify(response.data);
+    if (json.includes('<script>') || json.includes('javascript:')) {
+      throw new Error('Potential XSS in response');
+    }
+  }
+
+  return response;
+}
+```
+
+## Permission Model
+
+### Browser Permissions
+
+Some capabilities require browser permissions:
+
+| Capability | Permission | How to Request |
+|------------|------------|----------------|
+| `storage.read` | None | Available |
+| `notifications.send` | Notifications | `Notification.requestPermission()` |
+| `geolocation.get` | Geolocation | `navigator.geolocation.getCurrentPosition()` |
+| `hardware.cameraCapture` | Camera | `navigator.mediaDevices.getUserMedia()` |
+
+### ABP Permission Flow
+
+```javascript
+async function cameraCapture() {
+  // Check permission
+  const permission = await navigator.permissions.query({ name: 'camera' });
+
+  if (permission.state === 'denied') {
+    return {
+      success: false,
+      error: {
+        code: 'PERMISSION_DENIED',
+        message: 'Camera access permission denied',
+        retryable: true
+      }
+    };
+  }
+
+  if (permission.state === 'prompt') {
+    // Request permission (requires user gesture)
+    return {
+      success: false,
+      error: {
+        code: 'PERMISSION_REQUIRED',
+        message: 'Camera access requires user permission',
+        retryable: true
+      }
+    };
+  }
+
+  // Permission granted
+  const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+  // Capture frame and return image data...
+  return { success: true, data: { image: '...' } };
+}
+```
+
+### Manifest Security
+
+<Warning>
+Agents and bridges MUST apply security safeguards when discovering and fetching ABP manifests. The manifest is informational only and MUST NOT be implicitly trusted.
+</Warning>
+
+#### URL Validation
+
+**Block requests to internal networks:**
+
+```javascript
+function isValidManifestUrl(url) {
+  const parsed = new URL(url);
+
+  // Block dangerous protocols
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    return false;
+  }
+
+  // Block internal networks
+  const hostname = parsed.hostname;
+  if (hostname === 'localhost' ||
+      hostname.startsWith('127.') ||
+      hostname.startsWith('10.') ||
+      /^172\.(1[6-9]|2[0-9]|3[01])\./.test(hostname) ||
+      hostname.startsWith('192.168.') ||
+      hostname.endsWith('.local')) {
+    // Allow only if explicitly configured
+    return isInternalNetworkAllowed();
+  }
+
+  return true;
+}
+```
+
+#### Fetch Safeguards
+
+**Enforce limits when fetching manifests:**
+
+| Safeguard | Recommendation |
+|-----------|----------------|
+| Timeout | 10 seconds maximum |
+| Size limit | 1MB maximum manifest size |
+| Redirect limit | Maximum 5 redirects |
+| Content-Type | Verify `application/json` |
+
+```javascript
+async function safeFetchManifest(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow'  // Browser enforces redirect limit
+    });
+
+    // Verify content type
+    const contentType = response.headers.get('content-type');
+    if (!contentType?.includes('application/json')) {
+      throw new Error('Invalid content type');
+    }
+
+    // Check size before reading
+    const contentLength = response.headers.get('content-length');
+    if (contentLength && parseInt(contentLength) > 1048576) {
+      throw new Error('Manifest too large');
+    }
+
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+```
+
+#### Trust Model
+
+The manifest is **informational only**. Agents:
+
+- **MUST NOT** trust manifest capabilities without runtime verification via `initialize()`
+- **MUST NOT** execute code or scripts referenced in manifests
+- **MUST NOT** grant permissions based solely on manifest claims
+
+The manifest enables discovery and filtering. The runtime `initialize()` handshake establishes actual trust and capabilities.
+
+## Common Vulnerabilities
+
+### 1. Unvalidated Input
+
+<Warning>
+Never use `eval()` or `Function()` with user-provided input.
+</Warning>
+
+```javascript
+// VULNERABLE - never do this
+async function executeCode({ code }) {
+  eval(code);
+  return { success: true };
+}
+```
+
+```javascript
+// SECURE - reject code execution
+async function executeCode({ code }) {
+  return {
+    success: false,
+    error: {
+      code: 'NOT_SUPPORTED',
+      message: 'Code execution not supported',
+      retryable: false
+    }
+  };
+}
+```
+
+### 2. Path Traversal
+
+```javascript
+// VULNERABLE - path traversal risk
+async function readFile({ path }) {
+  const content = fs.readFileSync(path, 'utf-8');
+  return { success: true, data: { content } };
+}
+```
+
+```javascript
+// SECURE - reject file system access
+async function readFile({ path }) {
+  return {
+    success: false,
+    error: {
+      code: 'NOT_SUPPORTED',
+      message: 'File system access not supported in browser',
+      retryable: false
+    }
+  };
+}
+```
+
+### 3. Prototype Pollution
+
+```javascript
+// VULNERABLE - prototype pollution risk
+async function setConfig({ config }) {
+  Object.assign(this.config, config);
+  return { success: true };
+}
+```
+
+```javascript
+// SECURE - validate and copy only safe properties
+async function setConfig({ config }) {
+  const safeConfig = {
+    theme: config.theme || 'light',
+    language: config.language || 'en'
+  };
+
+  this.config = { ...this.config, ...safeConfig };
+  return { success: true };
+}
+```
+
+## Audit Checklist
+
+### For Apps
+
+- [ ] Input validation on all capabilities
+- [ ] Rate limiting implemented
+- [ ] Sensitive capabilities gated by permissions
+- [ ] Output sanitization for generated content
+- [ ] CORS configured for manifest
+- [ ] CSP headers in place
+- [ ] No `eval()` or `Function()` with user input
+- [ ] No file system access (browser context)
+
+### For Clients
+
+- [ ] Manifest validation
+- [ ] Sandboxed browser contexts
+- [ ] Timeouts on all operations
+- [ ] Response validation
+- [ ] HTTPS for manifest/app connections
+- [ ] Permission model enforcement
+- [ ] Secure temporary file handling
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    Secure implementation patterns
+  </Card>
+  <Card title="Error Handling" icon="circle-exclamation" href="/reference/error-handling">
+    Secure error messages
+  </Card>
+  <Card title="Protocol Overview" icon="diagram-project" href="/concepts/protocol-overview">
+    Protocol details and security context
+  </Card>
+</CardGroup>

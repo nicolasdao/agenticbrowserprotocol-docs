@@ -1,0 +1,73 @@
+---
+title: "Quick Start"
+description: "Get up and running with ABP in minutes"
+icon: "rocket"
+---
+
+## Using ABP Apps (as an agent user)
+
+If you want to use an ABP-compliant web application or Chrome extension with an MCP-compatible AI agent:
+
+<Steps>
+  <Step title="Set up the MCP Bridge">
+    Follow the [MCP Bridge Quick Start](/guides/mcp-bridge-quickstart) to install and configure the bridge.
+  </Step>
+  <Step title="Connect to an app">
+    Use `abp_connect` with a URL or an extension directory path.
+  </Step>
+  <Step title="Use capabilities">
+    Call capabilities via `abp_call`.
+  </Step>
+</Steps>
+
+## Building ABP Apps (as a web developer)
+
+If you want to make your web application ABP-compatible:
+
+<Steps>
+  <Step title="Read the Quick Start">
+    See [Building ABP Apps](/guides/building-web-apps) for the full guide.
+  </Step>
+  <Step title="Implement window.abp">
+    Add the ABP interface to your app.
+  </Step>
+  <Step title="Serve a manifest">
+    Declare your capabilities in an `abp.json` file.
+  </Step>
+  <Step title="Test with the bridge">
+    Use the MCP Bridge to verify your implementation.
+  </Step>
+</Steps>
+
+## Building ABP Chrome Extensions
+
+If you want to expose Chrome extension APIs (`chrome.tabs`, `chrome.scripting`, etc.) to AI agents:
+
+<Steps>
+  <Step title="Read the guide">
+    See the [Chrome Extension Guide](/guides/chrome-extensions).
+  </Step>
+  <Step title="Create abp-app.html">
+    An extension page that implements `window.abp`.
+  </Step>
+  <Step title="Connect via the bridge">
+    Use `abp_connect({ extensionPath: "/path/to/extension" })`.
+  </Step>
+</Steps>
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card title="Protocol Overview" icon="diagram-project" href="/concepts/protocol-overview">
+    Understand ABP concepts and how it works end-to-end
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Dive into the system architecture
+  </Card>
+  <Card title="Examples" icon="flask" href="/guides/examples">
+    See working code examples
+  </Card>
+  <Card title="API Reference" icon="book" href="/reference/api">
+    Complete API documentation
+  </Card>
+</CardGroup>

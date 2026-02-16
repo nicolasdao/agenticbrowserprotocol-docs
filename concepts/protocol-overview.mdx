@@ -1,0 +1,439 @@
+---
+title: "Protocol Overview"
+description: "A simplified introduction to the Agentic Browser Protocol"
+icon: "diagram-project"
+---
+
+For complete API details and TypeScript definitions, see the [API Reference](/reference/api).
+
+## What is ABP?
+
+ABP is a protocol for exposing browser capabilities to AI agents through a standardized API. Instead of agents manipulating UI elements (clicking buttons, filling forms), apps expose a programmatic interface that agents call directly.
+
+**Traditional automation:**
+```javascript
+// Fragile: breaks when UI changes
+await page.click('#export-pdf-button');
+await page.waitForSelector('.download-complete');
+const pdfPath = await page.evaluate(() => document.querySelector('.download-link').href);
+```
+
+**With ABP:**
+```javascript
+// Reliable: explicit contract
+const result = await abp.call('export.pdf', {
+  content: htmlContent,
+  options: { pageSize: 'letter' }
+});
+// Result: { success: true, data: { pdfBase64: "..." } }
+```
+
+## Core Concepts
+
+### 1. Capabilities
+
+A **capability** is a discrete browser feature exposed through ABP. Examples:
+
+- `convert.markdownToHtml` -- Convert markdown to HTML
+- `render.canvas` -- Render graphics on a browser canvas
+- `ai.summarize` -- Summarize text using browser AI APIs
+- `auth.getUser` -- Get current user info from an authenticated session
+- `export.pdf` -- Generate PDF from HTML
+
+Each capability has:
+- **Name** (dot-notation namespace)
+- **Input schema** (JSON Schema defining parameters)
+- **Output schema** (JSON Schema defining return data)
+- **Availability** (can it be used right now?)
+- **Requirements** (what conditions must be met)
+
+### 2. Sessions
+
+A **session** is a connection between an agent and an ABP app. Sessions have a lifecycle:
+
+```
+Uninitialized → initialize() → Initialized → shutdown() → Uninitialized
+```
+
+During initialization, the agent and app negotiate:
+- Protocol version
+- Available capabilities
+- Supported features (notifications, progress, elicitation)
+
+### 3. Manifest
+
+A **manifest** is a JSON file that describes the app and its capabilities. It's used for discovery -- agents can check if an app supports ABP and what it offers *before* launching a browser.
+
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "com.example.markdown-converter",
+    "name": "Markdown Converter",
+    "version": "2.0.0"
+  },
+  "capabilities": [
+    {
+      "name": "convert.markdownToHtml",
+      "description": "Convert Markdown to HTML",
+      "inputSchema": { /* JSON Schema */ }
+    }
+  ]
+}
+```
+
+### 4. Transport
+
+The **transport** is how messages flow between agent and app. ABP supports:
+
+- **Puppeteer/Playwright** -- Browser automation via `page.evaluate()`
+- **postMessage** -- Iframe embedding
+- **WebSocket** -- Remote connections
+
+The protocol is transport-agnostic.
+
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      END-TO-END FLOW                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  1. Agent discovers app                                     │
+│     GET https://app.example.com                             │
+│     → Parse <link rel="abp-manifest" href="/abp.json">     │
+│     → Fetch manifest JSON                                   │
+│                                                             │
+│  2. Agent launches browser (via client implementation)      │
+│     → Load app URL                                          │
+│     → Access window.abp                                     │
+│                                                             │
+│  3. Agent initializes session                               │
+│     window.abp.initialize({ agent: "my-agent", ... })       │
+│     ← { sessionId, capabilities, features }                 │
+│                                                             │
+│  4. Agent calls capabilities                                │
+│     window.abp.call('convert.markdownToHtml', { markdown }) │
+│     ← { success: true, data: { html: "<h1>...</h1>" } }    │
+│                                                             │
+│  5. App can notify agent or request input                   │
+│     window.__abp_notification({ event, data })              │
+│     window.__abp_progress({ operationId, percentage })      │
+│     window.__abp_elicitation({ method, params })            │
+│                                                             │
+│  6. Agent shuts down session                                │
+│     window.abp.shutdown()                                   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## The ABP Interface
+
+Every ABP-compliant app exposes a `window.abp` object with this interface:
+
+```typescript
+interface ABP {
+  // Required methods
+  initialize(params: InitializeParams): Promise<InitializeResult>;
+  shutdown(params?: ShutdownParams): Promise<void>;
+  call(capability: string, params?: object): Promise<ABPResponse>;
+
+  // Optional methods (for runtime discovery)
+  listCapabilities(): Promise<Capability[]>;
+  describeCapability(name: string): Promise<Capability | null>;
+  supports(name: string): Promise<SupportInfo>;
+
+  // Optional methods (for bidirectional communication)
+  notify(event: string, data?: unknown): void;
+  notifyProgress(info: ProgressInfo): void;
+  elicit(request: ElicitationRequest): Promise<ElicitationResponse>;
+
+  // Optional methods (for cancellation)
+  cancel(callId: string, reason?: string): Promise<CancelResponse>;
+
+  // Metadata
+  protocolVersion: string;
+  app: { id: string; name: string; version: string };
+}
+```
+
+## Capabilities
+
+### Capability Definition
+
+```typescript
+interface Capability {
+  name: string;              // e.g., "export.pdf"
+  description: string;
+  inputSchema: JSONSchema;   // JSON Schema for parameters
+  outputSchema: JSONSchema;  // JSON Schema for return data
+  available: boolean;        // Can be used right now
+  requirements: Requirement[];
+  features: Record<string, boolean>;
+  experimental?: boolean;
+  deprecated?: boolean;
+}
+```
+
+### Calling Capabilities
+
+```javascript
+// Simple call
+const result = await abp.call('convert.markdownToHtml', {
+  markdown: '# Hello World',
+  options: { gfm: true }
+});
+
+// With options (timeout, progress tracking)
+const result = await abp.call('export.pdf',
+  { html: content, options: { pageSize: 'letter' } },
+  { timeout: 30000, progressToken: 'pdf-123' }
+);
+
+// Response format
+{
+  success: true,
+  data: { /* capability-specific output */ },
+  metadata: { duration: 150 }
+}
+
+// Or on error:
+{
+  success: false,
+  error: {
+    code: 'OPERATION_FAILED',
+    message: 'Conversion failed: invalid input',
+    retryable: false
+  }
+}
+```
+
+## Session Lifecycle
+
+### Initialize
+
+```javascript
+const session = await abp.initialize({
+  agent: {
+    name: 'my-agent',
+    version: '1.0.0'
+  },
+  protocolVersion: '0.1',
+  features: {
+    notifications: true,
+    progress: true,
+    elicitation: true
+  }
+});
+
+// Response:
+{
+  sessionId: 'session-abc-123',
+  protocolVersion: '0.1',
+  app: { id: 'com.example.app', name: 'Example App', version: '1.0.0' },
+  capabilities: [
+    { name: 'convert.markdownToHtml', available: true },
+    { name: 'export.pdf', available: true }
+  ],
+  features: {
+    notifications: true,
+    progress: true,
+    elicitation: true,
+    dynamicCapabilities: false
+  }
+}
+```
+
+### Shutdown
+
+```javascript
+await abp.shutdown({ reason: 'User requested disconnect' });
+```
+
+Apps should clean up resources (event listeners, timers, etc.) on shutdown.
+
+## Message Flow
+
+ABP supports bidirectional communication:
+
+### Agent to App
+
+- `initialize()` -- Start session
+- `call()` -- Execute capability
+- `cancel()` -- Cancel long operation
+- `shutdown()` -- End session
+- Elicitation responses
+
+### App to Agent
+
+- **Notifications** -- One-way updates (state changed, capabilities changed)
+- **Progress** -- Progress updates for long operations
+- **Elicitation** -- Request input from agent/user
+
+### Example: Progress Reporting
+
+```javascript
+// Agent calls capability with progress tracking
+const result = await abp.call('export.pdf',
+  { html: largeDocument },
+  { progressToken: 'pdf-export-001' }
+);
+
+// App sends progress updates
+abp.notifyProgress({
+  operationId: 'pdf-export-001',
+  percentage: 25,
+  status: 'Rendering page 10 of 40'
+});
+
+// Agent receives progress via exposed function
+window.__abp_progress({ operationId, percentage, status });
+```
+
+### Example: Elicitation
+
+```javascript
+// App requests user input
+const response = await abp.elicit({
+  method: 'elicitation/input',
+  params: {
+    prompt: 'What page size for the PDF?',
+    schema: {
+      type: 'string',
+      enum: ['letter', 'a4', 'legal']
+    }
+  }
+});
+
+if (response.success) {
+  const pageSize = response.data.value;
+  // Use pageSize
+}
+```
+
+## Discovery
+
+Before launching a browser, agents can check if an app supports ABP:
+
+<Steps>
+  <Step title="Fetch HTML Head">
+    ```javascript
+    const response = await fetch('https://app.example.com');
+    const html = await response.text();
+    ```
+  </Step>
+  <Step title="Parse Manifest Link">
+    ```html
+    <head>
+      <link rel="abp-manifest" href="/abp.json">
+    </head>
+    ```
+  </Step>
+  <Step title="Fetch Manifest">
+    ```javascript
+    const manifestUrl = parseManifestLink(html);
+    const manifest = await fetch(manifestUrl).then(r => r.json());
+
+    // Check capabilities
+    if (manifest.capabilities.some(c => c.name === 'export.pdf')) {
+      // This app can export PDFs - worth launching browser
+    }
+    ```
+  </Step>
+</Steps>
+
+See [Discovery & Manifest](/concepts/discovery) for complete details.
+
+## Transport Options
+
+### Puppeteer/Playwright
+
+Most common for AI agent integration:
+
+```javascript
+const browser = await puppeteer.launch({ headless: false });
+const page = await browser.newPage();
+await page.goto('https://app.example.com');
+
+// Call capability
+const result = await page.evaluate(async () => {
+  return await window.abp.call('convert.markdownToHtml', {
+    markdown: '# Hello',
+    options: { gfm: true }
+  });
+});
+
+// Set up notification handler
+await page.exposeFunction('__abp_notification', (notification) => {
+  console.log('Notification:', notification);
+});
+```
+
+<Note>
+Most capabilities work in headless mode. Some capabilities require **headful mode** (`headless: false`) for full access (authenticated sessions, GPU rendering, etc.).
+</Note>
+
+### postMessage (Iframe Embedding)
+
+For embedding ABP apps in other web pages:
+
+```javascript
+// Parent page
+iframe.contentWindow.postMessage({
+  type: 'capabilities/call',
+  id: 'req-123',
+  payload: { capability: 'convert.markdownToHtml', params: { ... } }
+}, targetOrigin);
+
+// Listen for response
+window.addEventListener('message', (event) => {
+  if (event.data.type === 'capabilities/call-result') {
+    const response = event.data.payload;
+  }
+});
+```
+
+### WebSocket (Remote Connections)
+
+For remote ABP apps:
+
+```javascript
+const ws = new WebSocket('wss://app.example.com/abp');
+
+ws.send(JSON.stringify({
+  type: 'capabilities/call',
+  id: 'req-123',
+  timestamp: Date.now(),
+  payload: { capability: 'convert.markdownToHtml', params: { ... } }
+}));
+
+ws.onmessage = (event) => {
+  const message = JSON.parse(event.data);
+  if (message.type === 'capabilities/call-result') {
+    // Handle response
+  }
+};
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Common Pitfalls" icon="triangle-exclamation" href="/guides/common-pitfalls">
+    Critical mistakes to avoid -- read before implementing
+  </Card>
+  <Card title="Conformance Requirements" icon="clipboard-check" href="/reference/conformance">
+    Minimum requirements for compliance
+  </Card>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    Step-by-step guide to building an ABP app
+  </Card>
+  <Card title="MCP Bridge Quick Start" icon="bolt" href="/guides/mcp-bridge-quickstart">
+    Get started with the MCP Bridge
+  </Card>
+  <Card title="API Reference" icon="code" href="/reference/api">
+    Complete API specification
+  </Card>
+  <Card title="Examples & Tutorials" icon="graduation-cap" href="/guides/examples">
+    Working code examples
+  </Card>
+</CardGroup>

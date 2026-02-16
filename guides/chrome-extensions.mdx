@@ -1,0 +1,853 @@
+---
+title: "Chrome Extensions"
+description: "How to add ABP support to a Chrome extension for privileged browser API access"
+icon: "puzzle-piece"
+---
+
+How to add ABP support to a Chrome extension, giving AI agents access to privileged browser APIs like `chrome.tabs`, `chrome.scripting`, and `chrome.bookmarks`.
+
+<Note>
+**This is both a setup guide and a process document.** It covers the extension-specific mechanics (manifest.json, abp-app.html, `--load-extension`) AND the implementation process (inventory, mapping, validation). Before starting, complete the [Required Reading](#required-reading) -- three sections of the ABP Implementation Guide that cover the core ABP principles (Critical Rule, self-containment, forbidden patterns, response formats) that apply equally to extensions and web apps.
+</Note>
+
+## Required Reading
+
+Before reading this guide, read these three sections of the [ABP Implementation Guide](/guides/implementation-guide). They cover core ABP principles that apply to all implementations -- web apps and extensions alike. This guide builds on them and won't repeat their content.
+
+1. **[Section 1 -- The Critical Rule](/guides/implementation-guide#1-the-critical-rule)** -- The headless test, delivery vs. content production, self-containment. Every capability must produce a complete result for a program with no human present.
+2. **[Section 7 -- Forbidden Patterns](/guides/implementation-guide#7-forbidden-patterns)** -- Browser APIs you must not use inside capability handlers: `alert()`, `confirm()`, clipboard, downloads, share, file pickers, notifications.
+3. **[Section 8 -- Response Patterns](/guides/implementation-guide#8-response-patterns)** -- BinaryData format, expected output by capability type, error response format, the consistency rule.
+
+Once you've read those, this guide covers everything specific to Chrome extensions: architecture, `manifest.json` setup, wrapping `chrome.*` APIs, extension-specific forbidden patterns, and testing.
+
+---
+
+## The Critical Rule (Extensions)
+
+> **Every capability call MUST produce a complete, usable result for a program controlling the browser, with no human present.**
+
+This is the same Critical Rule from the ABP Implementation Guide (Section 1, covered in [Required Reading](#required-reading)). Before shipping any capability, ask:
+
+> *"Would this produce a complete, usable result for a program controlling the browser, with no human present?"*
+
+**Extension-specific implications:**
+
+- `chrome.tabs.create({ url })` is fine -- it creates a tab programmatically and returns the tab object
+- `chrome.downloads.download({ url })` needs care -- the agent needs the file data, not a download ID it can't access. Consider returning content directly via `chrome.scripting.executeScript` instead
+- `chrome.notifications.create()` is a delivery mechanism -- return the notification-worthy data in the response instead, and let the agent decide how to surface it
+- `chrome.identity.getAuthToken()` may trigger an interactive auth flow -- handle denial gracefully with `PERMISSION_DENIED`
+
+**Self-containment applies too:** Each capability must be a self-contained, stateless operation. It receives input parameters, does its work, and returns output -- all in a single call. Don't require the agent to call `tabs.navigate` before `scrape.page` -- make `scrape.page` accept a URL parameter and handle navigation internally.
+
+Delivery vs. content production, self-containment, and real-world failure examples are covered in detail in the ABP Implementation Guide Section 1 (see [Required Reading](#required-reading)).
+
+## Why Chrome Extensions?
+
+Web apps can only access standard Web APIs. Chrome extensions unlock **privileged browser APIs** that web pages cannot use:
+
+| API | What It Enables |
+|-----|-----------------|
+| `chrome.tabs` | Query, create, update, and close browser tabs |
+| `chrome.scripting` | Inject scripts into any web page |
+| `chrome.bookmarks` | Read and manage bookmarks |
+| `chrome.history` | Access browsing history |
+| `chrome.storage` | Persistent cross-session storage |
+| `chrome.downloads` | Manage file downloads |
+| `chrome.cookies` | Read and modify cookies for any domain |
+
+By wrapping these APIs as ABP capabilities, you give AI agents structured access to browser-level functionality that would otherwise require fragile UI automation.
+
+## Architecture
+
+```
++----------------------------------------------------------------+
+|                CHROME EXTENSION + ABP                           |
++----------------------------------------------------------------+
+|                                                                |
+|  AI Agent (Claude Code, etc.)                                  |
+|    |                                                           |
+|    | MCP stdio                                                 |
+|    v                                                           |
+|  ABP MCP Bridge                                                |
+|    |                                                           |
+|    | Puppeteer (--load-extension)                              |
+|    v                                                           |
+|  Chrome Browser                                                |
+|    |                                                           |
+|    +- chrome-extension://ID/abp-app.html                       |
+|    |    +- window.abp  <-  ABP runtime                         |
+|    |         |                                                 |
+|    |         +- calls chrome.tabs, chrome.scripting, etc.      |
+|    |                                                           |
+|    +- Service Worker (background.js)                           |
+|         +- Extension lifecycle                                 |
+|                                                                |
++----------------------------------------------------------------+
+```
+
+Key insight: an extension page (`chrome-extension://ID/abp-app.html`) has full access to `chrome.*` APIs. When Puppeteer calls `page.evaluate()` on that page, the code runs in the extension's context with all its permissions.
+
+## Inventory Your chrome.* APIs
+
+Before writing ABP code, create an **API inventory** -- the extension equivalent of the web app [Feature Inventory](/guides/implementation-guide#2-step-1--inventory-your-features).
+
+For each `chrome.*` API you plan to expose, document:
+
+1. **What it does** -- the API's purpose
+2. **What parameters it takes** -- and which are required vs. optional
+3. **What it returns** -- the shape of the data
+4. **Side effects** -- does it create tabs, modify bookmarks, trigger downloads, etc.?
+5. **Permissions required** -- what must be declared in `manifest.json`
+
+### API Inventory Template
+
+| chrome.* API | Purpose | Parameters | Returns | Side Effects | Permission |
+|-------------|---------|------------|---------|-------------|------------|
+| `chrome.tabs.query({})` | List open tabs | `queryInfo` (optional filter) | `Tab[]` -- id, url, title, active, windowId | None (read-only) | `tabs` |
+| `chrome.tabs.create({url})` | Open a new tab | `url` (required) | `Tab` -- id, url | Creates a tab | `tabs` |
+| `chrome.scripting.executeScript({target, func})` | Inject and run JS in a page | `tabId`, `func` or `files` | `InjectionResult[]` | Executes code in target tab | `scripting`, host permission |
+| `chrome.bookmarks.search(query)` | Search bookmarks | `query` string or object | `BookmarkTreeNode[]` | None (read-only) | `bookmarks` |
+| `chrome.storage.local.get(keys)` | Read from extension storage | `keys` (string or array) | `Record<string, any>` | None (read-only) | `storage` |
+
+### Why This Step Matters
+
+The inventory prevents two common mistakes:
+
+1. **Exposing too much:** Not every `chrome.*` API should become an ABP capability. `chrome.management.uninstall()` or `chrome.browsingData.remove()` are destructive operations that agents probably shouldn't have unsupervised access to.
+
+2. **Missing the data shape:** `chrome.tabs.query()` returns a rich `Tab` object with 20+ fields. Your capability should return a curated subset -- what the agent actually needs -- not dump the raw Chrome API response.
+
+## Map APIs to ABP Capabilities
+
+After inventorying your APIs, map them to ABP capability names.
+
+### Extension-Specific Namespaces
+
+Extensions can use standard ABP namespaces where they fit, plus extension-specific ones:
+
+| Namespace | Purpose | Examples |
+|-----------|---------|----------|
+| `extension.*` | Extension lifecycle / health | `extension.ping`, `extension.info` |
+| `tabs.*` | Tab management | `tabs.list`, `tabs.create`, `tabs.close` |
+| `scrape.*` or `crawl.*` | Content extraction from web pages | `scrape.page`, `crawl.singlePage`, `crawl.multiPage` |
+| `bookmarks.*` | Bookmark operations | `bookmarks.search`, `bookmarks.list`, `bookmarks.create` |
+| `history.*` | Browsing history | `history.search`, `history.recent` |
+| `storage.*` | Extension storage | `storage.get`, `storage.set` |
+| `cookies.*` | Cookie management | `cookies.get`, `cookies.getAll` |
+
+Use `camelCase` for multi-word names: `crawl.singlePage`, not `crawl.single-page`.
+
+### Mapping Process
+
+For each API in your inventory:
+
+**Step A -- Name it.** Choose a capability name. `chrome.tabs.query()` -> `tabs.list`. `chrome.scripting.executeScript()` for text extraction -> `scrape.page`.
+
+**Step B -- Define inputs.** What parameters does the agent provide? Simplify from the raw Chrome API. Instead of exposing the full `chrome.tabs.query(queryInfo)` with all its fields, accept just the parameters the agent is likely to use:
+
+```javascript
+// Raw Chrome API: chrome.tabs.query({ active: true, currentWindow: true, url: "..." })
+// ABP capability input: { active?: boolean, url?: string }
+```
+
+**Step C -- Define outputs.** Curate the response. Don't return raw Chrome API objects -- return the fields the agent needs:
+
+```javascript
+// Raw Chrome Tab: { id, index, windowId, openerTabId, highlighted, active, pinned, audible,
+//                   discarded, autoDiscardable, mutedInfo, url, pendingUrl, title, favIconUrl,
+//                   status, incognito, width, height, sessionId, groupId }
+// ABP capability output: { id, url, title, active }
+```
+
+**Step D -- Identify side effects.** If the API creates, modifies, or deletes something (tabs, bookmarks, storage), the agent should understand this from the capability description. Write-operations should be clearly named (`tabs.create`, `bookmarks.delete`) so agents know the operation is not read-only.
+
+**Step E -- Check for dangerous operations.** Some `chrome.*` APIs are destructive or sensitive:
+
+| API | Risk | Recommendation |
+|-----|------|---------------|
+| `chrome.tabs.remove()` | Closes tabs (data loss if unsaved) | Expose with clear naming (`tabs.close`), consider requiring confirmation |
+| `chrome.browsingData.remove()` | Clears browsing data permanently | Generally don't expose as ABP capability |
+| `chrome.management.uninstall()` | Removes extensions | Don't expose |
+| `chrome.cookies.remove()` | Deletes cookies (may log user out) | Expose cautiously with clear naming |
+| `chrome.bookmarks.remove()` | Deletes bookmarks | Expose with clear naming |
+
+## Step-by-Step Implementation
+
+<Steps>
+
+<Step title="Extension manifest.json">
+
+Your Chrome extension needs a `manifest.json` (Manifest V3). Declare the permissions your ABP capabilities will use:
+
+```json
+{
+  "manifest_version": 3,
+  "name": "My ABP Extension",
+  "version": "1.0.0",
+  "description": "Exposes browser capabilities to AI agents via ABP",
+
+  "permissions": [
+    "tabs",
+    "scripting",
+    "activeTab",
+    "bookmarks"
+  ],
+
+  "host_permissions": [
+    "<all_urls>"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  }
+}
+```
+
+**Key points:**
+- Only request permissions your capabilities actually need
+- `host_permissions` with `<all_urls>` is needed for `chrome.scripting.executeScript` on arbitrary pages
+- A `background.service_worker` is required for the extension to load (even if minimal)
+
+</Step>
+
+<Step title="Create background.js">
+
+A minimal service worker is required for the extension to load:
+
+```javascript
+// background.js -- minimal service worker
+chrome.runtime.onInstalled.addListener(() => {
+  console.log('[ABP Extension] Installed');
+});
+```
+
+</Step>
+
+<Step title="Create abp-app.html">
+
+This is the ABP entry page. The MCP Bridge navigates to this page after loading the extension.
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ABP Extension</title>
+</head>
+<body>
+  <h1>ABP Extension</h1>
+  <p>This page exposes chrome.* APIs as ABP capabilities.</p>
+
+  <script src="abp-runtime.js"></script>
+</body>
+</html>
+```
+
+**Convention:** Name this file `abp-app.html`. The MCP Bridge defaults to this filename when connecting to extensions.
+
+</Step>
+
+<Step title="Create abp-runtime.js">
+
+Implement `window.abp` on the extension page. This is identical to a web app's ABP runtime, except your capability implementations can call `chrome.*` APIs:
+
+```javascript
+// abp-runtime.js -- ABP runtime for Chrome extension
+window.abp = {
+  protocolVersion: '0.1',
+  app: {
+    id: 'com.example.my-abp-extension',
+    name: 'My ABP Extension',
+    version: '1.0.0',
+    description: 'Browser capabilities for AI agents'
+  },
+
+  initialized: false,
+  sessionId: null,
+
+  async initialize(params) {
+    this.initialized = true;
+    this.sessionId = crypto.randomUUID();
+
+    return {
+      sessionId: this.sessionId,
+      protocolVersion: '0.1',
+      app: this.app,
+      capabilities: [
+        { name: 'tabs.list', available: true },
+        { name: 'extension.ping', available: true }
+      ],
+      features: {
+        notifications: false,
+        progress: false,
+        elicitation: false,
+        dynamicCapabilities: false
+      }
+    };
+  },
+
+  async shutdown() {
+    this.initialized = false;
+    this.sessionId = null;
+  },
+
+  async call(capability, params = {}) {
+    if (!this.initialized) {
+      return {
+        success: false,
+        error: { code: 'NOT_INITIALIZED', message: 'Call initialize() first', retryable: true }
+      };
+    }
+
+    switch (capability) {
+      case 'extension.ping':
+        return { success: true, data: { pong: true, timestamp: Date.now() } };
+
+      case 'tabs.list':
+        return await this._tabsList(params);
+
+      default:
+        return {
+          success: false,
+          error: { code: 'UNKNOWN_CAPABILITY', message: `Unknown: ${capability}`, retryable: false }
+        };
+    }
+  },
+
+  async _tabsList() {
+    try {
+      const tabs = await chrome.tabs.query({});
+      return {
+        success: true,
+        data: {
+          tabs: tabs.map(t => ({
+            id: t.id,
+            url: t.url,
+            title: t.title,
+            active: t.active,
+            windowId: t.windowId
+          }))
+        }
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: { code: 'TABS_ERROR', message: error.message, retryable: false }
+      };
+    }
+  },
+
+  async listCapabilities() {
+    return [
+      {
+        name: 'extension.ping',
+        description: 'Health check -- returns pong',
+        available: true,
+        inputSchema: { type: 'object', properties: {} }
+      },
+      {
+        name: 'tabs.list',
+        description: 'List all open browser tabs',
+        available: true,
+        inputSchema: { type: 'object', properties: {} }
+      }
+    ];
+  }
+};
+
+console.log('[ABP Extension] Runtime loaded');
+```
+
+</Step>
+
+</Steps>
+
+### File Structure
+
+```
+my-abp-extension/
++-- manifest.json        # Chrome extension manifest (Manifest V3)
++-- background.js        # Service worker (minimal, required)
++-- abp-app.html         # ABP entry page (navigated to by bridge)
++-- abp-runtime.js       # window.abp implementation
+```
+
+## Discovery: How It Differs from Web Apps
+
+For **web apps**, the ABP client performs HTTP-based pre-flight discovery:
+1. Fetch HTML `<head>` via HTTP
+2. Parse `<link rel="abp-manifest" href="...">`
+3. Fetch manifest JSON via HTTP
+
+For **Chrome extensions**, this HTTP-based discovery is **not possible** because `chrome-extension://` URLs cannot be fetched from Node.js. Instead, the bridge uses **runtime-only discovery**:
+
+1. Launch browser with `--load-extension=/path/to/extension`
+2. Poll `browser.targets()` to discover the extension ID from its service worker URL
+3. Navigate to `chrome-extension://ID/abp-app.html`
+4. Wait for `window.abp` and call `initialize()` + `listCapabilities()`
+5. Build a synthetic manifest from the runtime data
+
+This means:
+- **No `<link rel="abp-manifest">` needed** in `abp-app.html`
+- **No `abp.json` manifest file needed** (though you can include one for documentation purposes)
+- Capability discovery happens entirely at runtime via `initialize()` and `listCapabilities()`
+
+## Example: Wrapping chrome.* APIs as Capabilities
+
+### chrome.tabs -- Tab Management
+
+```javascript
+// List tabs
+async _tabsList({ query }) {
+  const queryInfo = query || {};
+  const tabs = await chrome.tabs.query(queryInfo);
+  return {
+    success: true,
+    data: { tabs: tabs.map(t => ({ id: t.id, url: t.url, title: t.title })) }
+  };
+}
+
+// Create a new tab
+async _tabsCreate({ url }) {
+  const tab = await chrome.tabs.create({ url });
+  return { success: true, data: { tabId: tab.id, url: tab.url } };
+}
+```
+
+### chrome.scripting -- Script Injection
+
+```javascript
+// Extract text content from a page
+async _scrapePage({ tabId, url }) {
+  // If URL provided, navigate first
+  if (url) {
+    await chrome.tabs.update(tabId, { url });
+    // Wait for page to load
+    await new Promise(resolve => {
+      chrome.tabs.onUpdated.addListener(function listener(id, info) {
+        if (id === tabId && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      });
+    });
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => document.body.innerText
+  });
+
+  return {
+    success: true,
+    data: { text: results[0]?.result || '' }
+  };
+}
+```
+
+### chrome.bookmarks -- Bookmark Access
+
+```javascript
+// Search bookmarks
+async _bookmarksSearch({ query }) {
+  const results = await chrome.bookmarks.search(query);
+  return {
+    success: true,
+    data: {
+      bookmarks: results.map(b => ({
+        id: b.id,
+        title: b.title,
+        url: b.url,
+        dateAdded: b.dateAdded
+      }))
+    }
+  };
+}
+```
+
+## Forbidden Patterns for Extensions
+
+The Forbidden Patterns from the ABP Implementation Guide (Section 7, covered in [Required Reading](#required-reading)) apply fully to extensions. Additionally, extensions have their own patterns to avoid:
+
+| Forbidden Pattern | Why It Fails | ABP Alternative |
+|-------------------|-------------|-----------------|
+| `chrome.notifications.create()` | Delivery mechanism -- agent can't see or dismiss OS notifications | Return notification-worthy data in the response |
+| `chrome.downloads.download({ url })` and returning just the download ID | Agent can't access files in the browser download bar | Fetch the content via `chrome.scripting.executeScript`, return it in the response |
+| `chrome.identity.launchWebAuthFlow()` without error handling | May open interactive login -- agent can't interact with auth UI | Handle errors with `PERMISSION_DENIED`; document the requirement |
+| `chrome.windows.create({ type: 'popup' })` as output | Agent can't see or interact with popup windows | Return data in the response; use tabs internally for processing only |
+| `chrome.action.openPopup()` | Opens extension popup UI -- agent can't interact with it | Expose the popup's functionality as capabilities directly |
+| Relying on `chrome.runtime.sendMessage()` round-trips for output | Adds complexity; ABP page can call `chrome.*` APIs directly | Call `chrome.*` APIs directly from `abp-app.html` -- no message passing needed |
+
+### Extension-Specific Self-Containment
+
+The self-containment principle is especially important for extensions because `chrome.*` APIs are inherently stateful (tabs exist, pages are loaded, bookmarks are created). Each capability must handle its own setup:
+
+```javascript
+// Wrong: Requires agent to call tabs.create first, then scrape.page
+async _scrapePage({ tabId }) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => document.body.innerText
+  });
+  return { success: true, data: { text: results[0]?.result } };
+}
+
+// Correct: Self-contained -- accepts URL, handles tab lifecycle internally
+async _scrapePage({ url }) {
+  const tab = await chrome.tabs.create({ url, active: false });
+
+  // Wait for load
+  await new Promise(resolve => {
+    chrome.tabs.onUpdated.addListener(function listener(id, info) {
+      if (id === tab.id && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    });
+  });
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => ({ title: document.title, text: document.body.innerText })
+  });
+
+  // Clean up
+  await chrome.tabs.remove(tab.id);
+
+  return { success: true, data: results[0]?.result };
+}
+```
+
+## Response Patterns
+
+Extension capabilities use the same ABP response format as web apps (covered in ABP Implementation Guide Section 8 -- see [Required Reading](#required-reading)).
+
+Key points:
+
+- **Return actual data**, not status messages. `tabs.list` returns `{ tabs: [...] }`, not `{ message: "Listed 5 tabs" }`.
+- **Use standard error codes:** `NOT_INITIALIZED`, `UNKNOWN_CAPABILITY`, `INVALID_PARAMS`, `OPERATION_FAILED`, `PERMISSION_DENIED`.
+- **Binary data** (screenshots, exported files) uses the `BinaryData` format: `{ content, mimeType, encoding, size, filename }`.
+- **Consistency:** All capabilities in the same namespace should return data in the same shape.
+
+### Extension-Specific Error Handling
+
+`chrome.*` API errors have consistent patterns. Wrap them into ABP error responses:
+
+```javascript
+async _someCapability(params) {
+  try {
+    const result = await chrome.someApi.someMethod(params);
+    return { success: true, data: result };
+  } catch (error) {
+    // chrome.runtime.lastError pattern (older APIs)
+    if (chrome.runtime.lastError) {
+      return {
+        success: false,
+        error: {
+          code: 'CHROME_API_ERROR',
+          message: chrome.runtime.lastError.message,
+          retryable: false
+        }
+      };
+    }
+
+    // Promise rejection pattern (newer APIs)
+    if (error.message?.includes('permission')) {
+      return {
+        success: false,
+        error: {
+          code: 'PERMISSION_DENIED',
+          message: error.message,
+          retryable: false
+        }
+      };
+    }
+
+    return {
+      success: false,
+      error: {
+        code: 'OPERATION_FAILED',
+        message: error.message,
+        retryable: false
+      }
+    };
+  }
+}
+```
+
+## Async Patterns for Long-Running Operations
+
+Some extension capabilities (like crawling multiple pages) take time. Use progress reporting to keep the agent informed:
+
+```javascript
+async _crawlPages({ urls }) {
+  const results = [];
+
+  for (let i = 0; i < urls.length; i++) {
+    // Report progress if handler is wired
+    if (typeof window.__abpOnProgress === 'function') {
+      window.__abpOnProgress({
+        operationId: 'crawl',
+        progress: i,
+        total: urls.length,
+        percentage: Math.round((i / urls.length) * 100),
+        status: `Crawling ${urls[i]} (${i + 1}/${urls.length})`
+      });
+    }
+
+    const tab = await chrome.tabs.create({ url: urls[i], active: false });
+
+    // Wait for page to load
+    await new Promise(resolve => {
+      chrome.tabs.onUpdated.addListener(function listener(id, info) {
+        if (id === tab.id && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      });
+    });
+
+    // Extract content
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => ({ title: document.title, text: document.body.innerText })
+    });
+
+    results.push({ url: urls[i], ...result.result });
+    await chrome.tabs.remove(tab.id);
+  }
+
+  return { success: true, data: { pages: results } };
+}
+```
+
+## Testing
+
+### Manual Testing (DevTools Console)
+
+<Steps>
+
+<Step title="Load your extension">
+Go to `chrome://extensions/` > "Load unpacked" > select your extension directory.
+</Step>
+
+<Step title="Find the extension ID">
+The ID is shown on the extensions page.
+</Step>
+
+<Step title="Navigate to ABP page">
+Go to `chrome-extension://YOUR_ID/abp-app.html`.
+</Step>
+
+<Step title="Test in DevTools Console">
+
+```javascript
+// Check window.abp exists
+console.log(window.abp);
+
+// Initialize
+const session = await window.abp.initialize({
+  agent: { name: 'test', version: '1.0' },
+  protocolVersion: '0.1',
+  features: { notifications: false, progress: false, elicitation: false }
+});
+console.log('Session:', session);
+
+// Call a capability
+const result = await window.abp.call('extension.ping');
+console.log('Ping:', result);
+
+const tabs = await window.abp.call('tabs.list');
+console.log('Tabs:', tabs);
+
+// Shutdown
+await window.abp.shutdown();
+```
+
+</Step>
+
+</Steps>
+
+### Automated Testing with Puppeteer
+
+```javascript
+import puppeteer from 'puppeteer';
+
+const extensionPath = '/path/to/your/extension';
+
+const browser = await puppeteer.launch({
+  headless: true,
+  args: [
+    `--load-extension=${extensionPath}`,
+    `--disable-extensions-except=${extensionPath}`,
+  ]
+});
+
+// Find extension ID from targets
+const targets = browser.targets();
+const extTarget = targets.find(t => t.url().startsWith('chrome-extension://'));
+const extId = new URL(extTarget.url()).hostname;
+
+// Navigate to ABP page
+const page = (await browser.pages())[0];
+await page.goto(`chrome-extension://${extId}/abp-app.html`);
+
+// Wait for window.abp
+await page.waitForFunction('typeof window.abp !== "undefined"');
+
+// Initialize and test
+const result = await page.evaluate(async () => {
+  await window.abp.initialize({
+    agent: { name: 'test', version: '1.0' },
+    protocolVersion: '0.1',
+    features: { notifications: false, progress: false, elicitation: false }
+  });
+  return await window.abp.call('extension.ping');
+});
+
+console.log('Result:', result);
+
+await browser.close();
+```
+
+## Connecting with the MCP Bridge
+
+Once your extension implements ABP, connect to it using the MCP Bridge. There are two methods:
+
+### By directory path (unpacked/development extensions)
+
+```
+abp_connect({ extensionPath: "/path/to/your/extension" })
+```
+
+### By extension ID (Chrome Web Store extensions)
+
+If the extension is published on the Chrome Web Store, you can connect using its 32-character ID. Find the ID in the Web Store URL (e.g., `https://chromewebstore.google.com/detail/extension-name/<id>`).
+
+```
+abp_connect({ extensionId: "abcdefghijklmnopqrstuvwxyzabcdef" })
+```
+
+The bridge automatically downloads the extension from the Chrome Web Store, extracts it to a local cache, and loads it into Puppeteer. No Chrome installation or manual setup is required -- the bridge handles everything.
+
+Downloaded extensions are cached, so subsequent connections with the same ID skip the download.
+
+### What happens during connect
+
+Regardless of the method, the bridge will:
+1. Launch Chrome with your extension loaded
+2. Discover the extension ID automatically
+3. Navigate to `abp-app.html`
+4. Initialize the ABP session
+5. List available capabilities
+
+Then use `abp_call` as usual:
+
+```
+abp_call({ capability: "extension.ping" })
+abp_call({ capability: "tabs.list" })
+```
+
+### Custom ABP Entry Page
+
+If your extension's ABP page has a different filename, specify it:
+
+```
+abp_connect({ extensionPath: "/path/to/extension", abpPage: "agent-interface.html" })
+abp_connect({ extensionId: "abcdefgh...", abpPage: "agent-interface.html" })
+```
+
+### Disconnecting
+
+```
+abp_disconnect()
+```
+
+This shuts down the ABP session and closes the browser (including the loaded extension).
+
+## Headless vs Headful Mode
+
+Puppeteer's default `headless: true` mode supports Chrome extensions. Most extension capabilities (tab management, script injection, bookmarks, storage) work fine in headless mode.
+
+Set `ABP_HEADLESS=false` if your extension needs:
+- Visual page rendering for screenshots
+- GPU access for canvas/WebGL operations
+- User interaction for permission prompts
+
+## Permissions Best Practices
+
+1. **Request only what you need** -- Don't declare `<all_urls>` unless your capabilities actually need cross-origin access
+2. **Use `activeTab` where possible** -- Limits access to the current tab until the user interacts
+3. **Document permissions** -- Explain in `listCapabilities()` descriptions why each permission is needed
+4. **Handle permission errors** -- If a `chrome.*` API call fails due to missing permissions, return a clear ABP error with `code: 'PERMISSION_DENIED'`
+
+## Validation Checklist
+
+Run through this checklist before shipping your ABP extension. For additional checks, see also the web app [Validation Checklist](/guides/implementation-guide#9-validation-checklist).
+
+### Extension Setup
+
+- [ ] `manifest.json` is valid Manifest V3 with correct `manifest_version: 3`
+- [ ] All required `permissions` are declared (tabs, scripting, bookmarks, etc.)
+- [ ] `host_permissions` are declared if using `chrome.scripting.executeScript` on arbitrary pages
+- [ ] `background.service_worker` is declared and the file exists
+- [ ] `abp-app.html` exists in the extension root (or the custom page specified by `abpPage`)
+- [ ] `abp-runtime.js` is loaded via `<script>` in `abp-app.html`
+
+### Runtime
+
+- [ ] `window.abp` is defined when `abp-app.html` loads
+- [ ] `window.abp.initialize()` returns `sessionId`, `protocolVersion`, `app`, `capabilities`, `features`
+- [ ] `window.abp.call()` routes to the correct handler for each capability
+- [ ] `window.abp.call()` returns `{ success: false, error: { code: 'NOT_INITIALIZED' } }` if called before `initialize()`
+- [ ] `window.abp.call()` returns `{ success: false, error: { code: 'UNKNOWN_CAPABILITY' } }` for unknown capabilities
+- [ ] `window.abp.listCapabilities()` returns an array (NOT a `{ success, data }` envelope) with at least `name` and `available` fields per capability
+- [ ] `window.abp.listCapabilities()` includes `inputSchema` for each capability (this is the **only** way the bridge discovers parameter schemas for extensions)
+- [ ] `window.abp.shutdown()` resets session state
+
+### Headless Test (per capability)
+
+For each capability, verify:
+
+- [ ] The capability produces a complete result with no human present
+- [ ] No `alert()`, `confirm()`, `prompt()` calls
+- [ ] No `chrome.notifications.create()` as output -- return data instead
+- [ ] No `chrome.identity.launchWebAuthFlow()` without error handling
+- [ ] No reliance on popup UI (`chrome.action.openPopup()`)
+- [ ] Side effects (tab creation, bookmark modification) are cleaned up where appropriate
+
+### Self-Containment
+
+- [ ] Each capability operates on its **input parameters**, not on state from previous calls
+- [ ] Capabilities that scrape pages accept a URL parameter and handle tab lifecycle internally
+- [ ] No capability requires the agent to call another capability first to "set up" state
+- [ ] Tabs created for internal processing are closed after use
+
+### Data Quality
+
+- [ ] Capabilities return actual data, not status messages (e.g., `{ tabs: [...] }` not `{ message: "Listed 5 tabs" }`)
+- [ ] `chrome.*` API results are curated -- return the fields the agent needs, not raw Chrome objects
+- [ ] Binary content (screenshots, files) uses `BinaryData` format with correct `mimeType` and `encoding`
+- [ ] Error responses use standard ABP error codes (`PERMISSION_DENIED`, `INVALID_PARAMS`, `OPERATION_FAILED`, etc.)
+
+### Consistency
+
+- [ ] All capabilities in the same namespace return data in the same shape
+- [ ] Error handling is consistent across all capabilities (same error wrapping pattern)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="MCP Bridge Architecture" icon="gears" href="/guides/mcp-bridge-architecture">
+    How the bridge handles extension connections
+  </Card>
+  <Card title="API Reference" icon="book" href="/reference/api">
+    Complete ABP API documentation
+  </Card>
+  <Card title="Common Pitfalls" icon="triangle-exclamation" href="/guides/common-pitfalls">
+    Mistakes to avoid in ABP implementations
+  </Card>
+  <Card title="Building ABP Web Apps" icon="code" href="/guides/building-web-apps">
+    General ABP implementation guide for web apps
+  </Card>
+</CardGroup>

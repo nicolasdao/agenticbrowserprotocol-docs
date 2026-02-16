@@ -1,0 +1,205 @@
+---
+title: "Client-Side Implementation"
+description: "Guide for building ABP clients in any language or environment"
+icon: "terminal"
+---
+
+Guide for building ABP clients in any language or environment.
+
+<Note>
+For a reference implementation, see the [ABP MCP Bridge Architecture](/guides/mcp-bridge-architecture).
+</Note>
+
+## Overview
+
+ABP clients connect AI agents to ABP-compliant web applications. They handle:
+- Discovery (fetching manifests)
+- Browser management
+- Session lifecycle
+- Data flow optimization
+- Bidirectional communication
+
+## Client Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│           ABP Client Architecture               │
+├─────────────────────────────────────────────────┤
+│                                                 │
+│  ┌─────────────────────────────────────────┐   │
+│  │ Agent Interface Layer                   │   │
+│  │ (MCP server, Python API, CLI, etc.)     │   │
+│  └──────────────┬──────────────────────────┘   │
+│                 │                               │
+│                 ▼                               │
+│  ┌─────────────────────────────────────────┐   │
+│  │ Core ABP Client                         │   │
+│  │ - Discovery                             │   │
+│  │ - Session Management                    │   │
+│  │ - Capability Registry                   │   │
+│  │ - Data Flow Manager                     │   │
+│  └──────────────┬──────────────────────────┘   │
+│                 │                               │
+│                 ▼                               │
+│  ┌─────────────────────────────────────────┐   │
+│  │ Browser Automation Layer                │   │
+│  │ (Puppeteer, Playwright, etc.)           │   │
+│  └──────────────┬──────────────────────────┘   │
+│                 │                               │
+│                 ▼                               │
+│  ┌─────────────────────────────────────────┐   │
+│  │ Browser → ABP App                       │   │
+│  └─────────────────────────────────────────┘   │
+│                                                 │
+└─────────────────────────────────────────────────┘
+```
+
+## Implementation Checklist
+
+### 1. Discovery
+
+- [ ] Fetch HTML head (streaming recommended)
+- [ ] Parse `<link rel="abp-manifest">` tag
+- [ ] Fetch manifest JSON
+- [ ] Validate manifest structure
+- [ ] Cache manifests (with TTL)
+
+### 2. Browser Management
+
+- [ ] Launch browser (headless by default; use headful for capabilities needing a visible window)
+- [ ] Navigate to app URL
+- [ ] Wait for `window.abp` to be available
+- [ ] Set up event handlers (`__abp_notification`, `__abp_progress`, `__abp_elicitation`)
+- [ ] Handle browser crashes/disconnects
+
+### 3. Session Management
+
+- [ ] Call `window.abp.initialize()`
+- [ ] Store session ID
+- [ ] Track session state
+- [ ] Handle session expiration
+- [ ] Call `window.abp.shutdown()` on disconnect
+
+### 4. Capability Calls
+
+- [ ] Validate parameters against schemas
+- [ ] Call `window.abp.call()`
+- [ ] Handle `ABPResponse`
+- [ ] Retry on retryable errors
+- [ ] Support cancellation
+
+### 5. Data Flow
+
+- [ ] Detect binary data (Base64, MIME types)
+- [ ] Route all outputs to files
+- [ ] Return file paths to the agent (agent reads on demand)
+- [ ] Clean up temporary files
+
+### 6. Bidirectional Communication
+
+- [ ] Handle notifications
+- [ ] Handle progress updates
+- [ ] Handle elicitation requests
+- [ ] Handle capability changes
+
+## Reference: MCP Bridge
+
+The ABP MCP Bridge is a complete reference implementation. Key files:
+
+```
+src/
+├── bridge/
+│   ├── ABPBridgeManager.ts      # Main orchestration
+│   ├── BrowserManager.ts        # Browser lifecycle
+│   ├── ABPSessionManager.ts     # Session management
+│   ├── DataFlowManager.ts       # Data routing
+│   └── CapabilityRegistry.ts    # Capability tracking
+├── tools/
+│   ├── static-tools.ts          # abp_connect, abp_disconnect, abp_status
+│   └── dynamic-tool-factory.ts  # Dynamic tool generation
+├── handlers/
+│   ├── notification-handler.ts
+│   ├── progress-handler.ts
+│   └── elicitation-handler.ts
+└── utils/
+    └── manifest-fetcher.ts      # Discovery
+```
+
+## Example: Python Client (Conceptual)
+
+```python
+from playwright.sync_api import sync_playwright
+
+class ABPClient:
+    def __init__(self):
+        self.browser = None
+        self.page = None
+        self.session_id = None
+
+    def connect(self, url: str):
+        # Launch browser
+        playwright = sync_playwright().start()
+        self.browser = playwright.chromium.launch()  # headless by default
+        self.page = self.browser.new_page()
+
+        # Set up handlers
+        self.page.expose_function('__abp_notification', self.handle_notification)
+        self.page.expose_function('__abp_progress', self.handle_progress)
+
+        # Load app
+        self.page.goto(url)
+        self.page.wait_for_function('typeof window.abp !== "undefined"')
+
+        # Initialize session
+        session = self.page.evaluate('''async () => {
+            return await window.abp.initialize({
+                agent: { name: 'python-client', version: '1.0.0' },
+                protocolVersion: '0.1',
+                features: { notifications: true, progress: true, elicitation: false }
+            });
+        }''')
+
+        self.session_id = session['sessionId']
+        return session
+
+    def call(self, capability: str, params: dict = None):
+        result = self.page.evaluate('''async ({ capability, params }) => {
+            return await window.abp.call(capability, params);
+        }''', {'capability': capability, 'params': params or {}})
+
+        if not result['success']:
+            raise Exception(f"Capability failed: {result['error']['message']}")
+
+        return result['data']
+
+    def disconnect(self):
+        if self.page:
+            self.page.evaluate('async () => await window.abp.shutdown()')
+        if self.browser:
+            self.browser.close()
+
+    def handle_notification(self, notification):
+        print(f"Notification: {notification}")
+
+    def handle_progress(self, progress):
+        print(f"Progress: {progress['percentage']}%")
+```
+
+## Best Practices
+
+1. **Use headless mode by default** -- switch to headful only when specific capabilities require a visible window (GPU, OAuth, etc.)
+2. **Cache manifests** to reduce network requests
+3. **Route large data to files** to prevent context bloat
+4. **Handle errors gracefully** with exponential backoff
+5. **Clean up resources** on disconnect
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="MCP Bridge Architecture" icon="diagram-project" href="/guides/mcp-bridge-architecture">
+    Study the reference implementation
+  </Card>
+  <Card title="Protocol Overview" icon="sitemap" href="/concepts/protocol-overview">
+    Complete protocol details
+  </Card>
+</CardGroup>

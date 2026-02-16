@@ -1,0 +1,37 @@
+---
+title: "Glossary"
+description: "Standard terms used throughout the ABP specification and documentation"
+icon: "book-bookmark"
+---
+
+| Term | Definition |
+|------|------------|
+| **ABP** | Agentic Browser Protocol |
+| **ABP Manifest** | JSON file describing an app's ABP support and capabilities |
+| **ABP Runtime** | App-side implementation exposed on `window.abp` |
+| **ABP Client** | Any agent-side implementation for interacting with ABP apps |
+| **AbortSignal** | Web standard for signaling cancellation, used by ABP for cancel support |
+| **Agent** | AI system or CLI tool consuming ABP capabilities |
+| **App** | Web application implementing ABP |
+| **Base64** | Binary-to-text encoding used for binary data over WebSocket transport |
+| **BinaryData** | Wrapper object for binary content with mimeType, encoding, and size metadata |
+| **BinaryDataReference** | Reference to large binary content via downloadUrl instead of inline data |
+| **Call ID** | Unique identifier for a capability call, used for cancellation |
+| **Cancellation** | Aborting an in-progress operation before completion |
+| **Capability** | Browser feature exposed through ABP |
+| **Call** | Execute a capability (equivalent to MCP's `tools/call`) |
+| **Contract** | The interface definition (manifest + `window.abp`) that ABP specifies, independent of any client implementation |
+| **Discovery** | Process of determining if an app supports ABP and what it offers |
+| **Elicitation** | App requesting input from agent (equivalent to MCP's elicitation) |
+| **Headful Mode** | Browser launched with a visible window, required for full ABP capability access |
+| **Manifest Link** | HTML `<link rel="abp-manifest">` tag pointing to the manifest |
+| **MCP Bridge** | Recommended client architecture: a generic MCP server that translates ABP capabilities into MCP tools for AI agents |
+| **Notification** | One-way message from app to agent |
+| **Session** | Active connection between agent and app |
+| **Transfer List** | postMessage feature for zero-copy ArrayBuffer transfer |
+| **Transport** | Communication layer (Puppeteer, postMessage, WebSocket) used by a client implementation |
+
+## See Also
+
+- [API Reference](/reference/api)
+- [Protocol Overview](/concepts/protocol-overview)

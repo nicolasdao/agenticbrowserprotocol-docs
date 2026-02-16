@@ -1,0 +1,1242 @@
+---
+title: "Examples & Tutorials"
+description: "Working code examples for ABP implementations"
+icon: "flask"
+---
+
+Working code examples for building and using ABP applications.
+
+## Minimal ABP App
+
+The simplest possible ABP implementation: a Markdown to HTML converter.
+
+### File Structure
+
+```
+minimal-abp-app/
++-- public/
+|   +-- index.html
+|   +-- abp.json
+|   +-- abp-runtime.js
++-- server.js
+```
+
+### `public/index.html`
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Minimal ABP App</title>
+  <link rel="abp-manifest" href="/abp.json">
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+    code {
+      background: #f4f4f4;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Minimal ABP App</h1>
+  <p>This app exposes a single capability: <code>convert.markdownToHtml</code></p>
+
+  <h2>Manual Test</h2>
+  <p>Open DevTools Console and run:</p>
+  <pre><code>const session = await window.abp.initialize({
+  agent: { name: 'test', version: '1.0' },
+  protocolVersion: '0.1',
+  features: { notifications: false, progress: false, elicitation: false }
+});
+
+const result = await window.abp.call('convert.markdownToHtml', {
+  markdown: '# Hello from ABP\n\nThis is **bold** text.'
+});
+
+console.log(result);</code></pre>
+
+  <script src="/abp-runtime.js"></script>
+</body>
+</html>
+```
+
+### `public/abp.json`
+
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "com.example.minimal",
+    "name": "Minimal ABP App",
+    "version": "1.0.0",
+    "description": "A minimal ABP implementation with Markdown to HTML conversion"
+  },
+  "capabilities": [
+    {
+      "name": "convert.markdownToHtml",
+      "description": "Convert Markdown text to HTML",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "markdown": {
+            "type": "string",
+            "description": "Markdown content to convert"
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "sanitize": { "type": "boolean", "default": true }
+            },
+            "description": "Conversion options"
+          }
+        },
+        "required": ["markdown"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "html": {
+            "type": "string",
+            "description": "Converted HTML output"
+          },
+          "inputLength": {
+            "type": "number",
+            "description": "Length of the input markdown"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+### `public/abp-runtime.js`
+
+```javascript
+window.abp = {
+  protocolVersion: '0.1',
+  app: { id: 'com.example.minimal', name: 'Minimal ABP App', version: '1.0.0' },
+  initialized: false,
+  sessionId: null,
+
+  async initialize(params) {
+    console.log('[ABP] Initialize', params);
+    this.initialized = true;
+    this.sessionId = crypto.randomUUID();
+    return {
+      sessionId: this.sessionId,
+      protocolVersion: '0.1',
+      app: this.app,
+      capabilities: [{ name: 'convert.markdownToHtml', available: true }],
+      features: {
+        notifications: false,
+        progress: false,
+        elicitation: false,
+        dynamicCapabilities: false
+      }
+    };
+  },
+
+  async shutdown() {
+    console.log('[ABP] Shutdown');
+    this.initialized = false;
+    this.sessionId = null;
+  },
+
+  async call(capability, params = {}) {
+    if (!this.initialized) {
+      return {
+        success: false,
+        error: { code: 'NOT_INITIALIZED', message: 'Call initialize() first', retryable: true }
+      };
+    }
+
+    if (capability === 'convert.markdownToHtml') {
+      return await this.convertMarkdown(params);
+    }
+
+    return {
+      success: false,
+      error: { code: 'UNKNOWN_CAPABILITY', message: `Unknown: ${capability}`, retryable: false }
+    };
+  },
+
+  async convertMarkdown({ markdown, options = {} }) {
+    try {
+      // Simple markdown to HTML conversion using the browser DOM
+      const div = document.createElement('div');
+      div.textContent = markdown;
+      const html = div.innerHTML
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/^# (.*)/gm, '<h1>$1</h1>')
+        .replace(/^## (.*)/gm, '<h2>$1</h2>');
+      return { success: true, data: { html, inputLength: markdown.length } };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'CONVERSION_ERROR',
+          message: error.message,
+          retryable: false
+        }
+      };
+    }
+  },
+
+  async listCapabilities() { return []; },
+  async supports(name) {
+    return name === 'convert.markdownToHtml'
+      ? { supported: true, available: true }
+      : { supported: false, available: false };
+  },
+  notify() {},
+  notifyProgress() {},
+  async elicit() {
+    return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not supported', retryable: false } };
+  },
+  async cancel() { return { callId: '', cancelled: false }; }
+};
+
+console.log('[ABP] Runtime loaded');
+```
+
+### `server.js`
+
+```javascript
+const express = require('express');
+const app = express();
+
+app.use(express.static('public'));
+
+const PORT = 3000;
+app.listen(PORT, () => {
+  console.log(`Minimal ABP app running at http://localhost:${PORT}`);
+  console.log(`Manifest: http://localhost:${PORT}/abp.json`);
+});
+```
+
+### Run It
+
+```bash
+npm install express
+node server.js
+# Visit http://localhost:3000
+```
+
+## Markdown to HTML Converter
+
+A more realistic example using the `marked` library.
+
+### `public/index.html`
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Markdown Converter</title>
+  <link rel="abp-manifest" href="/abp.json">
+</head>
+<body>
+  <h1>Markdown to HTML Converter</h1>
+  <p>Exposes <code>convert.markdownToHtml</code> capability via ABP.</p>
+
+  <!-- Include marked.js library -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/abp-runtime.js"></script>
+</body>
+</html>
+```
+
+### `public/abp.json`
+
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "com.example.markdown-converter",
+    "name": "Markdown Converter",
+    "version": "1.0.0"
+  },
+  "capabilities": [
+    {
+      "name": "convert.markdownToHtml",
+      "description": "Convert Markdown to HTML",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "markdown": { "type": "string" },
+          "options": {
+            "type": "object",
+            "properties": {
+              "gfm": { "type": "boolean", "default": true },
+              "breaks": { "type": "boolean", "default": false }
+            }
+          }
+        },
+        "required": ["markdown"]
+      }
+    }
+  ]
+}
+```
+
+### `public/abp-runtime.js`
+
+```javascript
+window.abp = {
+  protocolVersion: '0.1',
+  app: { id: 'com.example.markdown-converter', name: 'Markdown Converter', version: '1.0.0' },
+  initialized: false,
+  sessionId: null,
+
+  async initialize(params) {
+    this.initialized = true;
+    this.sessionId = crypto.randomUUID();
+    return {
+      sessionId: this.sessionId,
+      protocolVersion: '0.1',
+      app: this.app,
+      capabilities: [{ name: 'convert.markdownToHtml', available: true }],
+      features: { notifications: false, progress: false, elicitation: false, dynamicCapabilities: false }
+    };
+  },
+
+  async shutdown() {
+    this.initialized = false;
+    this.sessionId = null;
+  },
+
+  async call(capability, params = {}) {
+    if (!this.initialized) {
+      return { success: false, error: { code: 'NOT_INITIALIZED', message: 'Call initialize() first', retryable: true } };
+    }
+
+    if (capability === 'convert.markdownToHtml') {
+      return await this.convertMarkdown(params);
+    }
+
+    return { success: false, error: { code: 'UNKNOWN_CAPABILITY', message: `Unknown: ${capability}`, retryable: false } };
+  },
+
+  async convertMarkdown({ markdown, options = {} }) {
+    try {
+      const html = marked.parse(markdown, {
+        gfm: options.gfm !== false,
+        breaks: options.breaks || false
+      });
+
+      return {
+        success: true,
+        data: {
+          html,
+          inputLength: markdown.length,
+          outputLength: html.length
+        }
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'CONVERSION_ERROR',
+          message: error.message,
+          retryable: false
+        }
+      };
+    }
+  },
+
+  async listCapabilities() { return []; },
+  async supports(name) {
+    return name === 'convert.markdownToHtml'
+      ? { supported: true, available: true }
+      : { supported: false, available: false };
+  },
+  notify() {},
+  notifyProgress() {},
+  async elicit() { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not supported', retryable: false } }; },
+  async cancel() { return { callId: '', cancelled: false }; }
+};
+```
+
+### Usage with MCP Bridge
+
+```bash
+# In your AI agent (e.g., via the MCP Bridge)
+abp_connect("http://localhost:3000")
+
+# Use the capability
+abp_convert_markdownToHtml("# Hello\n\nThis is **bold**.")
+
+# Result:
+# { success: true, data: { html: "<h1>Hello</h1>\n<p>This is <strong>bold</strong>.</p>" } }
+```
+
+## PDF Generator
+
+There are two approaches to PDF generation. The **recommended approach** is to return HTML content and let the agent or client generate a PDF. The **advanced approach** uses `window.print()` as a transport signal when the app needs its own CSS context for rendering.
+
+The example below shows the advanced `window.print()` pattern -- useful when the app has specific `@media print` styles or complex page layout needs. For the simple pattern, see the [Markdown Converter](#markdown-to-html-converter) example above -- the agent calls `convert.markdownToHtml` to get HTML, then uses a client-side tool to produce a PDF.
+
+### Advanced: Transport-Assisted PDF via `window.print()`
+
+### Capability Definition (`public/abp.json` excerpt)
+
+```json
+{
+  "name": "export.pdf",
+  "description": "Generate PDF from HTML content. Renders the content with CSS styling and uses the browser print engine for high-quality vector PDF output.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "html": {
+        "type": "string",
+        "description": "HTML content to convert to PDF"
+      },
+      "options": {
+        "type": "object",
+        "properties": {
+          "pageSize": {
+            "type": "string",
+            "enum": ["letter", "a4", "legal"],
+            "default": "a4"
+          },
+          "headerText": {
+            "type": "string",
+            "description": "Optional header text displayed on each page"
+          }
+        }
+      }
+    },
+    "required": ["html"]
+  },
+  "outputSchema": {
+    "type": "object",
+    "description": "PDF is captured by the transport layer via window.print() interception. The ABPResponse contains a render confirmation; the actual PDF is generated by the client using page.pdf().",
+    "properties": {
+      "rendered": { "type": "boolean" }
+    }
+  }
+}
+```
+
+### Handler (`public/abp-runtime.js` excerpt)
+
+```javascript
+async exportPdf({ html, options: pdfOptions = {} }, callOptions = {}) {
+  const progressToken = callOptions.progressToken;
+
+  // Stage 1: Prepare the print container
+  if (progressToken) {
+    window.__abp_progress({
+      operationId: progressToken,
+      progress: 0, total: 100, percentage: 0,
+      status: 'Preparing content...', stage: 'prepare'
+    });
+  }
+
+  const container = document.getElementById('print-container');
+  container.innerHTML = html;
+
+  // Stage 2: Apply print-specific styles via CSS custom properties
+  if (progressToken) {
+    window.__abp_progress({
+      operationId: progressToken,
+      progress: 30, total: 100, percentage: 30,
+      status: 'Applying print styles...', stage: 'styling'
+    });
+  }
+
+  const root = document.documentElement;
+  root.style.setProperty('--page-size', pdfOptions.pageSize || 'A4');
+
+  if (pdfOptions.headerText) {
+    const header = container.querySelector('.print-header');
+    if (header) header.textContent = pdfOptions.headerText;
+  }
+
+  // Wait for all fonts and images to finish loading
+  await document.fonts.ready;
+
+  if (progressToken) {
+    window.__abp_progress({
+      operationId: progressToken,
+      progress: 80, total: 100, percentage: 80,
+      status: 'Generating PDF...', stage: 'print'
+    });
+  }
+
+  // Stage 3: Signal the transport to capture PDF
+  // Puppeteer-based clients intercept this call and generate PDF via page.pdf()
+  window.print();
+
+  if (progressToken) {
+    window.__abp_progress({
+      operationId: progressToken,
+      progress: 100, total: 100, percentage: 100,
+      status: 'Complete', stage: 'done'
+    });
+  }
+
+  // The bridge captures the PDF and returns it to the agent.
+  // This response is supplementary -- the bridge's captured PDF takes priority.
+  return {
+    success: true,
+    data: { rendered: true }
+  };
+}
+```
+
+### Companion CSS
+
+```css
+/* Only show the print container when printing */
+@media print {
+  body > *:not(#print-container) { display: none; }
+  #print-container { display: block; }
+  .no-print { display: none; }
+  .page-break { page-break-before: always; }
+}
+
+/* Page size is driven by a CSS variable set in the handler */
+@page {
+  size: var(--page-size, A4) portrait;
+  margin: 15mm;
+}
+```
+
+### What the Agent Sees
+
+The ABP client intercepts `window.print()`, generates a PDF via `page.pdf()`, and routes the binary data to a file. The agent receives something like:
+
+```
+File saved: /tmp/abp-mcp-bridge/export_pdf_1707234567890.pdf
+Type: application/pdf
+Size: 45832 bytes
+```
+
+The agent can then read, attach, or reference the PDF file by path.
+
+<Note>
+This is a *transport-assisted* capability. The app itself never generates the PDF binary -- it only renders HTML into a print-ready container and calls `window.print()`. Puppeteer-based clients listen for that signal and use `page.pdf()` (Chrome DevTools Protocol) to produce the actual PDF. This means the app works identically in any ABP-compliant client that supports print interception.
+</Note>
+
+## Canvas Chart Renderer
+
+An app that uses the browser's Canvas API to render charts -- a capability that only browsers have.
+
+### `public/abp.json` (excerpt)
+
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "com.example.chart-renderer",
+    "name": "Chart Renderer",
+    "version": "1.0.0"
+  },
+  "capabilities": [
+    {
+      "name": "render.chart",
+      "description": "Render a chart as a PNG image using the browser Canvas API",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["bar", "line", "pie"], "description": "Chart type" },
+          "data": {
+            "type": "object",
+            "properties": {
+              "labels": { "type": "array", "items": { "type": "string" } },
+              "values": { "type": "array", "items": { "type": "number" } }
+            },
+            "required": ["labels", "values"]
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "width": { "type": "number", "default": 800 },
+              "height": { "type": "number", "default": 400 },
+              "title": { "type": "string" }
+            }
+          }
+        },
+        "required": ["type", "data"]
+      }
+    }
+  ]
+}
+```
+
+### `public/abp-runtime.js` (capability handler excerpt)
+
+```javascript
+async _renderChart({ type, data, options = {} }) {
+  try {
+    const width = options.width || 800;
+    const height = options.height || 400;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+
+    // Use the app's charting library (e.g., Chart.js)
+    new Chart(ctx, {
+      type: type,
+      data: {
+        labels: data.labels,
+        datasets: [{ data: data.values }]
+      },
+      options: { animation: false, responsive: false }
+    });
+
+    // Wait for rendering to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Return the chart as a PNG image
+    const dataUrl = canvas.toDataURL('image/png');
+    const base64 = dataUrl.split(',')[1];
+
+    return {
+      success: true,
+      data: {
+        image: {
+          content: base64,
+          mimeType: 'image/png',
+          encoding: 'base64',
+          size: atob(base64).length,
+          filename: `${type}-chart.png`
+        },
+        width,
+        height
+      }
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: { code: 'RENDER_ERROR', message: error.message, retryable: false }
+    };
+  }
+}
+```
+
+This example demonstrates a capability that **only a browser can provide** -- GPU-accelerated canvas rendering with a charting library. The agent receives a PNG image it can save, embed in documents, or send to users.
+
+---
+
+## Multi-Capability App
+
+An app with multiple capabilities.
+
+### `public/abp-runtime.js`
+
+```javascript
+window.abp = {
+  protocolVersion: '0.1',
+  app: { id: 'com.example.multi', name: 'Multi-Capability App', version: '1.0.0' },
+  initialized: false,
+  sessionId: null,
+
+  async initialize(params) {
+    this.initialized = true;
+    this.sessionId = crypto.randomUUID();
+    return {
+      sessionId: this.sessionId,
+      protocolVersion: '0.1',
+      app: this.app,
+      capabilities: [
+        { name: 'convert.markdownToHtml', available: true },
+        { name: 'text.uppercase', available: true },
+        { name: 'export.html', available: true }
+      ],
+      features: { notifications: false, progress: false, elicitation: false, dynamicCapabilities: false }
+    };
+  },
+
+  async shutdown() {
+    this.initialized = false;
+    this.sessionId = null;
+  },
+
+  async call(capability, params = {}, options = {}) {
+    if (!this.initialized) {
+      return { success: false, error: { code: 'NOT_INITIALIZED', message: 'Call initialize() first', retryable: true } };
+    }
+
+    // Route to appropriate handler
+    switch (capability) {
+      case 'convert.markdownToHtml':
+        return await this.capabilities.convertMarkdown(params);
+      case 'text.uppercase':
+        return await this.capabilities.textUppercase(params);
+      case 'export.html':
+        return await this.capabilities.exportHtml(params);
+      default:
+        return { success: false, error: { code: 'UNKNOWN_CAPABILITY', message: `Unknown: ${capability}`, retryable: false } };
+    }
+  },
+
+  capabilities: {
+    async convertMarkdown({ markdown, options = {} }) {
+      try {
+        const html = marked.parse(markdown, {
+          gfm: options.gfm !== false,
+          breaks: options.breaks || false
+        });
+        return { success: true, data: { html } };
+      } catch (error) {
+        return { success: false, error: { code: 'CONVERSION_ERROR', message: error.message, retryable: false } };
+      }
+    },
+
+    async textUppercase({ text }) {
+      if (!text) {
+        return { success: false, error: { code: 'INVALID_PARAMS', message: 'Missing required parameter: text', retryable: false } };
+      }
+      return {
+        success: true,
+        data: {
+          result: text.toUpperCase(),
+          originalLength: text.length
+        }
+      };
+    },
+
+    async exportHtml({ content, title = 'Export' }) {
+      const html = `<!DOCTYPE html><html><head><title>${title}</title></head><body>${content}</body></html>`;
+      return {
+        success: true,
+        data: {
+          document: {
+            content: html,
+            mimeType: 'text/html',
+            encoding: 'utf-8',
+            size: new Blob([html]).size,
+            filename: 'export.html'
+          }
+        }
+      };
+    }
+  },
+
+  async listCapabilities() { return []; },
+  async supports(name) {
+    const supported = ['convert.markdownToHtml', 'text.uppercase', 'export.html'];
+    return supported.includes(name)
+      ? { supported: true, available: true }
+      : { supported: false, available: false };
+  },
+  notify() {},
+  notifyProgress() {},
+  async elicit() { return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not supported', retryable: false } }; },
+  async cancel() { return { callId: '', cancelled: false }; }
+};
+```
+
+## Progress Reporting Example
+
+Simulating a long-running operation with progress updates.
+
+```javascript
+window.abp = {
+  // ... (standard boilerplate)
+
+  async call(capability, params = {}, options = {}) {
+    if (!this.initialized) {
+      return { success: false, error: { code: 'NOT_INITIALIZED', message: 'Not initialized', retryable: true } };
+    }
+
+    if (capability === 'process.largefile') {
+      return await this.processLargeFile(params, options);
+    }
+
+    return { success: false, error: { code: 'UNKNOWN_CAPABILITY', message: 'Unknown', retryable: false } };
+  },
+
+  async processLargeFile({ content }, { progressToken } = {}) {
+    const chunks = content.match(/.{1,1000}/g) || [];
+    let processed = '';
+
+    for (let i = 0; i < chunks.length; i++) {
+      // Simulate processing delay
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Process chunk
+      processed += chunks[i].toUpperCase();
+
+      // Report progress
+      if (progressToken && window.__abp_progress) {
+        window.__abp_progress({
+          operationId: progressToken,
+          progress: i + 1,
+          total: chunks.length,
+          percentage: Math.round(((i + 1) / chunks.length) * 100),
+          status: `Processing chunk ${i + 1} of ${chunks.length}`,
+          stage: 'processing'
+        });
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        result: processed,
+        chunksProcessed: chunks.length
+      }
+    };
+  }
+};
+```
+
+**Usage:**
+```javascript
+// Agent calls with progress tracking
+const result = await abp.call('process.largefile',
+  { content: longText },
+  { progressToken: 'process-001' }
+);
+
+// Bridge receives progress via window.__abp_progress
+// and reports to agent
+```
+
+## Elicitation Example
+
+Requesting input from the agent/user.
+
+```javascript
+window.abp = {
+  // ... (standard boilerplate)
+
+  async call(capability, params = {}) {
+    if (!this.initialized) {
+      return { success: false, error: { code: 'NOT_INITIALIZED', message: 'Not initialized', retryable: true } };
+    }
+
+    if (capability === 'export.customPdf') {
+      return await this.exportCustomPdf(params);
+    }
+
+    return { success: false, error: { code: 'UNKNOWN_CAPABILITY', message: 'Unknown', retryable: false } };
+  },
+
+  async exportCustomPdf({ html }) {
+    // Ask agent for page size preference
+    if (window.__abp_elicitation) {
+      const sizeResponse = await window.__abp_elicitation({
+        method: 'elicitation/input',
+        params: {
+          prompt: 'What page size for the PDF?',
+          schema: {
+            type: 'string',
+            enum: ['letter', 'a4', 'legal'],
+            default: 'letter'
+          }
+        }
+      });
+
+      if (!sizeResponse.success) {
+        return {
+          success: false,
+          error: {
+            code: 'ELICITATION_FAILED',
+            message: 'Failed to get page size preference',
+            retryable: true
+          }
+        };
+      }
+
+      const pageSize = sizeResponse.data.value;
+
+      // Generate PDF with selected page size
+      const pdf = await generatePdf(html, { pageSize });
+
+      return {
+        success: true,
+        data: {
+          pdf: pdf.base64,
+          pageSize
+        }
+      };
+    }
+
+    // Fallback if elicitation not supported
+    return {
+      success: false,
+      error: {
+        code: 'ELICITATION_REQUIRED',
+        message: 'This capability requires elicitation support',
+        retryable: false
+      }
+    };
+  }
+};
+```
+
+## Dynamic Capabilities Example
+
+An app that detects browser features at runtime and builds its capability list dynamically. When asynchronous features become available (e.g., after browser AI models finish downloading), the app sends a `notifications/capabilities/list_changed` notification so the bridge can re-discover capabilities without a full reconnect.
+
+### File Structure
+
+```
+dynamic-caps-app/
++-- public/
+|   +-- index.html
+|   +-- abp.json          (static baseline -- always-available capabilities)
+|   +-- abp-runtime.js    (dynamic detection at runtime)
++-- server.js
+```
+
+### `public/abp.json` (Static Baseline)
+
+The manifest advertises only the capabilities that are always available. Dynamic capabilities are added at runtime during `initialize()`.
+
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "com.example.dynamic-caps",
+    "name": "Dynamic Capabilities App",
+    "version": "1.0.0",
+    "description": "Detects browser features at runtime and exposes matching ABP capabilities"
+  },
+  "capabilities": [
+    {
+      "name": "convert.markdownToHtml",
+      "description": "Convert Markdown to HTML (always available)",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "markdown": { "type": "string" }
+        },
+        "required": ["markdown"]
+      }
+    }
+  ]
+}
+```
+
+### `public/abp-runtime.js`
+
+<Accordion title="Full dynamic capabilities runtime (long code block)">
+
+```javascript
+window.abp = {
+  protocolVersion: '0.1',
+  app: { id: 'com.example.dynamic-caps', name: 'Dynamic Capabilities App', version: '1.0.0' },
+  initialized: false,
+  sessionId: null,
+  _capabilities: [],
+
+  // Dynamic capability detection
+  _detectCapabilities() {
+    const caps = [
+      // Always available
+      { name: 'convert.markdownToHtml', available: true }
+    ];
+
+    // Check for browser AI: Summarizer API
+    if (navigator.ai?.summarizer) {
+      caps.push({
+        name: 'ai.summarize',
+        description: 'Summarize text using the browser built-in AI',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', maxLength: 100000 },
+            maxLength: { type: 'number', default: 200 }
+          },
+          required: ['text']
+        },
+        available: true,
+        experimental: true,
+        browserRequirement: 'Chrome 130+ with AI features enabled'
+      });
+    }
+
+    // Check for browser AI: Translator API
+    if (navigator.ai?.translator) {
+      caps.push({
+        name: 'ai.translate',
+        description: 'Translate text using the browser built-in AI',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string' },
+            sourceLanguage: { type: 'string', default: 'en' },
+            targetLanguage: { type: 'string' }
+          },
+          required: ['text', 'targetLanguage']
+        },
+        available: true,
+        experimental: true,
+        browserRequirement: 'Chrome 130+ with AI features enabled'
+      });
+    }
+
+    // Check for WebGPU
+    if (navigator.gpu) {
+      caps.push({
+        name: 'render.webgpu',
+        description: 'GPU-accelerated rendering via WebGPU',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            scene: { type: 'string', description: 'Scene definition (JSON)' },
+            width: { type: 'number', default: 800 },
+            height: { type: 'number', default: 600 }
+          },
+          required: ['scene']
+        },
+        available: true,
+        features: { compute: true, render: true }
+      });
+    }
+
+    return caps;
+  },
+
+  // Watch for async capability changes (e.g., model downloads)
+  _watchForCapabilityChanges() {
+    if (navigator.ai?.summarizer) {
+      navigator.ai.summarizer.capabilities().then((caps) => {
+        if (caps.available === 'readily') {
+          console.log('[ABP] Summarizer model ready -- notifying capability change');
+          this.notify('notifications/capabilities/list_changed', {
+            changed: ['ai.summarize']
+          });
+        }
+      });
+    }
+
+    if (navigator.ai?.translator) {
+      navigator.ai.translator.capabilities().then((caps) => {
+        if (caps.available === 'readily') {
+          console.log('[ABP] Translator model ready -- notifying capability change');
+          this.notify('notifications/capabilities/list_changed', {
+            changed: ['ai.translate']
+          });
+        }
+      });
+    }
+  },
+
+  // ABP lifecycle
+  async initialize(params) {
+    this.initialized = true;
+    this.sessionId = crypto.randomUUID();
+    this._capabilities = this._detectCapabilities();
+
+    console.log('[ABP] Detected capabilities:', this._capabilities.map(c => c.name));
+
+    // Start watching for async changes after initialization
+    this._watchForCapabilityChanges();
+
+    return {
+      sessionId: this.sessionId,
+      protocolVersion: '0.1',
+      app: this.app,
+      capabilities: this._capabilities,
+      features: {
+        notifications: true,
+        progress: false,
+        elicitation: false,
+        dynamicCapabilities: true
+      }
+    };
+  },
+
+  async shutdown() {
+    this.initialized = false;
+    this.sessionId = null;
+    this._capabilities = [];
+  },
+
+  async call(capability, params = {}, options = {}) {
+    if (!this.initialized) {
+      return { success: false, error: { code: 'NOT_INITIALIZED', message: 'Call initialize() first', retryable: true } };
+    }
+
+    switch (capability) {
+      case 'convert.markdownToHtml':
+        return this._convertMarkdown(params);
+      case 'ai.summarize':
+        return this._aiSummarize(params);
+      case 'ai.translate':
+        return this._aiTranslate(params);
+      case 'render.webgpu':
+        return this._renderWebgpu(params);
+      default:
+        return { success: false, error: { code: 'UNKNOWN_CAPABILITY', message: `Unknown: ${capability}`, retryable: false } };
+    }
+  },
+
+  // Capability handlers
+  async _convertMarkdown({ markdown }) {
+    const div = document.createElement('div');
+    div.textContent = markdown;
+    const html = div.innerHTML
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      .replace(/^# (.*)/gm, '<h1>$1</h1>')
+      .replace(/^## (.*)/gm, '<h2>$1</h2>');
+    return { success: true, data: { html } };
+  },
+
+  async _aiSummarize({ text, maxLength = 200 }) {
+    if (!navigator.ai?.summarizer) {
+      return { success: false, error: { code: 'NOT_AVAILABLE', message: 'Summarizer API not available', retryable: false } };
+    }
+    try {
+      const summarizer = await navigator.ai.summarizer.create();
+      const summary = await summarizer.summarize(text, { maxLength });
+      return { success: true, data: { summary } };
+    } catch (error) {
+      return { success: false, error: { code: 'AI_ERROR', message: error.message, retryable: false } };
+    }
+  },
+
+  async _aiTranslate({ text, sourceLanguage = 'en', targetLanguage }) {
+    if (!navigator.ai?.translator) {
+      return { success: false, error: { code: 'NOT_AVAILABLE', message: 'Translator API not available', retryable: false } };
+    }
+    try {
+      const translator = await navigator.ai.translator.create({ sourceLanguage, targetLanguage });
+      const translatedText = await translator.translate(text);
+      return { success: true, data: { translatedText } };
+    } catch (error) {
+      return { success: false, error: { code: 'AI_ERROR', message: error.message, retryable: false } };
+    }
+  },
+
+  async _renderWebgpu({ scene, width = 800, height = 600 }) {
+    if (!navigator.gpu) {
+      return { success: false, error: { code: 'NOT_AVAILABLE', message: 'WebGPU not available', retryable: false } };
+    }
+    // Placeholder -- real implementation would set up a GPU pipeline
+    return { success: true, data: { imageDataUrl: '(rendered output)', width, height } };
+  },
+
+  // Standard ABP interface methods
+  async listCapabilities() { return this._capabilities; },
+
+  async supports(name) {
+    const found = this._capabilities.find(c => c.name === name);
+    return found
+      ? { supported: true, available: found.available }
+      : { supported: false, available: false };
+  },
+
+  notify(method, params) {
+    if (window.__abp_notify) {
+      window.__abp_notify({ method, params });
+    } else {
+      console.log('[ABP] Notification (no bridge):', method, params);
+    }
+  },
+
+  notifyProgress(params) {
+    if (window.__abp_progress) {
+      window.__abp_progress(params);
+    }
+  },
+
+  async elicit() {
+    return { success: false, error: { code: 'NOT_SUPPORTED', message: 'Not supported', retryable: false } };
+  },
+
+  async cancel() {
+    return { callId: '', cancelled: false };
+  }
+};
+
+console.log('[ABP] Dynamic capabilities runtime loaded');
+```
+
+</Accordion>
+
+### How It Works
+
+1. **At `initialize()` time**, `_detectCapabilities()` inspects the browser environment:
+   - `navigator.ai?.summarizer` -- Chrome's built-in Summarizer API
+   - `navigator.ai?.translator` -- Chrome's built-in Translator API
+   - `navigator.gpu` -- WebGPU support
+2. Only capabilities whose APIs actually exist in the current browser are included in the response.
+3. **After initialization**, `_watchForCapabilityChanges()` polls async readiness. Browser AI models may need to download before they are usable. Once a model reports `available === 'readily'`, the app sends a `notifications/capabilities/list_changed` notification.
+4. The ABP client receives this notification, calls `listCapabilities()` to get the updated list, and registers any new tools -- all without requiring the agent to reconnect.
+
+### What the Agent Sees
+
+On a browser with AI features and WebGPU:
+
+```
+Connected to "Dynamic Capabilities App" (v1.0.0)
+Available capabilities:
+  - convert.markdownToHtml
+  - ai.summarize (experimental)
+  - ai.translate (experimental)
+  - render.webgpu
+```
+
+On a browser without AI features:
+
+```
+Connected to "Dynamic Capabilities App" (v1.0.0)
+Available capabilities:
+  - convert.markdownToHtml
+```
+
+If a model finishes downloading mid-session, the agent is notified that new tools have become available.
+
+## Using ABP with the MCP Bridge
+
+### Complete Workflow
+
+```bash
+# 1. Start your ABP app
+cd my-abp-app
+node server.js
+# Listening on http://localhost:3000
+
+# 2. In Claude Code, connect
+abp_connect("http://localhost:3000")
+
+# Response:
+# Connected to "Markdown Converter" (v1.0.0)
+# Available capabilities:
+# - convert.markdownToHtml
+
+# 3. Use the capability
+abp_convert_markdownToHtml("# Hello World\n\nThis is a **test**.")
+
+# Response:
+# { success: true, data: { html: "<h1>Hello World</h1>..." } }
+
+# 4. When done, disconnect
+abp_disconnect()
+
+# Browser closes, dynamic tools removed
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Building ABP Web Apps" icon="code" href="/guides/building-web-apps">
+    Build your own ABP-compatible app
+  </Card>
+  <Card title="MCP Bridge Architecture" icon="gears" href="/guides/mcp-bridge-architecture">
+    Understand how the bridge works
+  </Card>
+  <Card title="Protocol Overview" icon="book" href="/concepts/protocol-overview">
+    Read the full specification
+  </Card>
+</CardGroup>

@@ -1,0 +1,420 @@
+---
+title: "Binary Data Protocol"
+description: "Protocol-level binary data handling across transports"
+icon: "file-binary"
+---
+
+How ABP handles binary data (PDFs, images, audio) across different transports.
+
+## Overview
+
+Many ABP capabilities produce or consume binary data:
+
+| Capability | Binary Output |
+|------------|---------------|
+| `export.pdf` | PDF document (application/pdf) |
+| `export.image` | PNG/JPEG image (image/png, image/jpeg) |
+| `process.image` | Processed image data |
+| `generate.qrcode` | QR code image |
+
+ABP defines standard formats for representing and transferring binary data across different transports.
+
+## Why Binary Handling Needs Standardization
+
+Without standardization, each app implements binary handling differently, making agents unable to reliably consume binary responses.
+
+### Design Decisions
+
+| Decision | Choice | Alternatives Considered | Rationale |
+|----------|--------|------------------------|-----------|
+| Data format | `BinaryData` wrapper object | Raw bytes, Base64 string only | Wrapper provides metadata (mimeType, size) that agents need for proper handling |
+| WebSocket encoding | Base64 in JSON | Binary frames, MessagePack | Base64 is universally supported, JSON-compatible, and simple. ~33% overhead is acceptable for most browser operations. |
+| Large file handling | Optional `downloadUrl` | Chunked transfer, streaming | Simple to implement, works across all transports, avoids memory issues |
+| Size threshold | Recommended 10MB | Fixed limit, no limit | Apps know their constraints best; 10MB is a sensible default |
+| Streaming | Not in v1.0 | Full streaming support | Adds significant complexity; can be added in future version if needed |
+
+### What We Explicitly Chose NOT to Do
+
+1. **No streaming** -- Adds complexity, most browser operations produce complete files
+2. **No chunked transfer** -- Can be added later if large file handling proves insufficient
+3. **No compression requirement** -- Apps MAY compress, but it's not mandated
+4. **No binary WebSocket frames in v1** -- Base64 is simpler and sufficient for most cases
+
+## BinaryData Format
+
+Binary data in ABP responses uses a standard wrapper:
+
+```typescript
+interface BinaryData {
+  // The binary content (format depends on transport)
+  content: string | ArrayBuffer | Blob;
+
+  // REQUIRED: MIME type of the content
+  mimeType: string;
+
+  // REQUIRED when content is a string: encoding used
+  encoding?: 'base64' | 'utf-8';
+
+  // RECOMMENDED: size in bytes (for validation/progress)
+  size?: number;
+
+  // OPTIONAL: suggested filename for downloads
+  filename?: string;
+}
+```
+
+### Example Response with Binary Data
+
+```javascript
+// PDF export response
+{
+  success: true,
+  data: {
+    document: {
+      content: 'JVBERi0xLjQKJeLjz9MK...',  // Base64-encoded PDF
+      mimeType: 'application/pdf',
+      encoding: 'base64',
+      size: 145832,
+      filename: 'export.pdf'
+    },
+    pageCount: 12
+  }
+}
+```
+
+**Key points:**
+- `mimeType` is **REQUIRED** -- agents need this to handle data correctly
+- `encoding` is **REQUIRED when content is a string** -- tells the agent how to decode
+- `size` is **RECOMMENDED** -- helps agents allocate buffers and show progress
+- `filename` is **OPTIONAL** -- provides a sensible default for saving
+
+## BinaryDataReference (Large Files)
+
+For files larger than a reasonable threshold (recommended: **10MB**), apps SHOULD provide a download URL instead of inline content:
+
+```typescript
+interface BinaryDataReference {
+  // URL to download the content
+  downloadUrl: string;
+
+  // REQUIRED: MIME type
+  mimeType: string;
+
+  // REQUIRED: size in bytes
+  size: number;
+
+  // OPTIONAL: suggested filename
+  filename?: string;
+
+  // OPTIONAL: when the URL expires (Unix timestamp ms)
+  expiresAt?: number;
+
+  // OPTIONAL: authentication for download
+  auth?: {
+    type: 'bearer' | 'query';
+    token?: string;      // For query auth
+    header?: string;     // For bearer auth
+  };
+}
+```
+
+### Example Large File Response
+
+```javascript
+{
+  success: true,
+  data: {
+    document: {
+      downloadUrl: 'https://app.example.com/downloads/abc123',
+      mimeType: 'application/pdf',
+      size: 52428800,  // 50MB
+      filename: 'large-report.pdf',
+      expiresAt: 1707500000000  // URL expires in 1 hour
+    }
+  }
+}
+```
+
+### Agent Handling
+
+```javascript
+const result = await abp.call('export.pdf', { html: largeDocument });
+
+if (result.success) {
+  const doc = result.data.document;
+
+  if (doc.downloadUrl) {
+    // Large file - download separately
+    const response = await fetch(doc.downloadUrl);
+    const buffer = await response.arrayBuffer();
+    await fs.writeFile(doc.filename || 'download.pdf', Buffer.from(buffer));
+  } else {
+    // Inline content
+    const buffer = doc.encoding === 'base64'
+      ? Buffer.from(doc.content, 'base64')
+      : Buffer.from(doc.content);
+    await fs.writeFile(doc.filename || 'download.pdf', buffer);
+  }
+}
+```
+
+## Transport-Specific Handling
+
+Each transport has different capabilities for binary data:
+
+### Puppeteer/Playwright Transport
+
+Puppeteer supports **direct binary transfer** via structured cloning:
+
+```javascript
+// App-side: return ArrayBuffer or Blob
+async function handlePdfExport(params) {
+  const pdfBlob = await generatePdf(params.html, params.options);
+
+  return {
+    success: true,
+    data: {
+      document: {
+        content: await pdfBlob.arrayBuffer(),  // ArrayBuffer transfers directly
+        mimeType: 'application/pdf',
+        size: pdfBlob.size,
+        filename: 'export.pdf'
+      }
+    }
+  };
+}
+
+// Agent-side: receive and convert
+const result = await page.evaluate(async (html) => {
+  return await window.abp.call('export.pdf', { html });
+}, htmlContent);
+
+if (result.success) {
+  const buffer = Buffer.from(result.data.document.content);
+  await fs.writeFile('output.pdf', buffer);
+}
+```
+
+### postMessage Transport
+
+postMessage supports **structured cloning with transferable objects** (zero-copy):
+
+```javascript
+// App-side: use transfer list for zero-copy
+const arrayBuffer = await blob.arrayBuffer();
+
+window.parent.postMessage({
+  type: 'capabilities/call-result',
+  id: requestId,
+  payload: {
+    success: true,
+    data: {
+      document: {
+        content: arrayBuffer,
+        mimeType: 'application/pdf',
+        size: arrayBuffer.byteLength
+      }
+    }
+  }
+}, targetOrigin, [arrayBuffer]);  // Transfer list - zero-copy!
+
+// Agent-side: receive transferred buffer
+window.addEventListener('message', (event) => {
+  const { content, mimeType } = event.data.payload.data.document;
+  // content is an ArrayBuffer, transferred (not copied)
+});
+```
+
+### WebSocket Transport
+
+WebSocket uses **Base64 encoding** for JSON compatibility:
+
+```javascript
+// App-side: encode as Base64
+const arrayBuffer = await blob.arrayBuffer();
+const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+
+ws.send(JSON.stringify({
+  type: 'capabilities/call-result',
+  id: requestId,
+  payload: {
+    success: true,
+    data: {
+      document: {
+        content: base64,
+        mimeType: 'application/pdf',
+        encoding: 'base64',
+        size: arrayBuffer.byteLength
+      }
+    }
+  }
+}));
+
+// Agent-side: decode Base64
+const base64 = response.data.document.content;
+const binary = atob(base64);
+const bytes = new Uint8Array(binary.length);
+for (let i = 0; i < binary.length; i++) {
+  bytes[i] = binary.charCodeAt(i);
+}
+const buffer = bytes.buffer;
+```
+
+### Transport Comparison
+
+| Transport | Binary Format | Zero-Copy | Overhead |
+|-----------|--------------|-----------|----------|
+| Puppeteer | ArrayBuffer | Yes (within page.evaluate) | None |
+| postMessage | ArrayBuffer + transfer list | Yes | None |
+| WebSocket | Base64 string | No | ~33% size increase |
+
+## Binary Input
+
+Some capabilities accept binary input (e.g., image processing):
+
+```javascript
+// Agent sends image for processing
+const imageBuffer = await fs.readFile('input.png');
+const base64 = imageBuffer.toString('base64');
+
+const result = await abp.call('process.image', {
+  image: {
+    content: base64,
+    mimeType: 'image/png',
+    encoding: 'base64'
+  },
+  operations: [
+    { type: 'resize', width: 800 },
+    { type: 'compress', quality: 80 }
+  ]
+});
+```
+
+### For Puppeteer/postMessage
+
+Agents MAY send ArrayBuffer directly:
+
+```javascript
+// Puppeteer - can pass ArrayBuffer
+const result = await page.evaluate(async (imageData, mimeType) => {
+  return await window.abp.call('process.image', {
+    image: {
+      content: imageData,  // ArrayBuffer
+      mimeType: mimeType
+    }
+  });
+}, imageArrayBuffer, 'image/png');
+```
+
+## Capability Schema Conventions
+
+Capabilities that produce binary output SHOULD document this in their schema:
+
+```javascript
+{
+  name: 'export.pdf',
+  description: 'Generate PDF from HTML',
+  outputSchema: {
+    type: 'object',
+    properties: {
+      document: {
+        type: 'object',
+        description: 'Binary PDF data',
+        properties: {
+          content: {
+            type: 'string',
+            description: 'Base64-encoded PDF (or ArrayBuffer for Puppeteer/postMessage)'
+          },
+          mimeType: { type: 'string', const: 'application/pdf' },
+          encoding: { type: 'string', enum: ['base64'] },
+          size: { type: 'number' },
+          filename: { type: 'string' },
+          // OR for large files:
+          downloadUrl: { type: 'string', format: 'uri' },
+          expiresAt: { type: 'number' }
+        },
+        required: ['mimeType']
+      },
+      pageCount: { type: 'number' }
+    }
+  }
+}
+```
+
+## Best Practices
+
+### For App Developers
+
+1. **Always include `mimeType`** -- Agents need this to handle the data correctly
+2. **Include `size` when known** -- Helps agents allocate buffers and show progress
+3. **Use `downloadUrl` for files > 10MB** -- Avoids memory issues
+4. **Set reasonable `expiresAt`** for download URLs (1 hour minimum recommended)
+5. **For WebSocket, always set `encoding: 'base64'`** when content is Base64
+
+### Example: Size-Based Routing
+
+```javascript
+async function handleExport(params, options) {
+  const blob = await generateOutput(params);
+
+  // Use download URL for large files
+  if (blob.size > 10 * 1024 * 1024) {  // 10MB
+    const url = await uploadToTempStorage(blob);
+    return {
+      success: true,
+      data: {
+        output: {
+          downloadUrl: url,
+          mimeType: blob.type,
+          size: blob.size,
+          expiresAt: Date.now() + 3600000  // 1 hour
+        }
+      }
+    };
+  }
+
+  // Inline for smaller files
+  return {
+    success: true,
+    data: {
+      output: {
+        content: await blobToBase64(blob),
+        mimeType: blob.type,
+        encoding: 'base64',
+        size: blob.size
+      }
+    }
+  };
+}
+```
+
+### For Agent/Client Developers
+
+1. **Check for `downloadUrl` first** -- Handle large files appropriately
+2. **Verify `size` matches actual content** when provided
+3. **Use `filename` for saving** if provided, generate sensible default otherwise
+4. **Handle both inline content and download URLs** transparently
+
+## Union Type
+
+For TypeScript implementations, use a union type:
+
+```typescript
+type BinaryOutput = BinaryData | BinaryDataReference;
+```
+
+This allows capabilities to return either inline binary data or a download reference.
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Data Flow" icon="arrows-split-up-and-left" href="/concepts/data-flow">
+    MCP Bridge's client-side routing logic
+  </Card>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    Build your first ABP app
+  </Card>
+  <Card title="API Reference" icon="book" href="/reference/api">
+    Full API specification
+  </Card>
+</CardGroup>

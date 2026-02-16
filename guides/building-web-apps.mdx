@@ -1,0 +1,844 @@
+---
+title: "Building ABP Web Apps"
+description: "Practical guide for making web applications ABP-compatible"
+icon: "code"
+---
+
+## Overview
+
+Making your web app ABP-compatible involves:
+
+1. **Implementing `window.abp`** -- A JavaScript object with required methods
+2. **Creating a manifest** -- A JSON file describing your app and capabilities
+3. **Adding a manifest link** -- A `<link>` tag in your HTML head
+4. **Testing** -- Verify everything works with the MCP Bridge
+
+**Effort estimate:** 100-150 lines for initial ABP wrapper, 10-20 lines per capability.
+
+<Warning>
+For a comprehensive, step-by-step implementation process, see the [ABP Implementation Guide](/guides/implementation-guide). Read [Common Pitfalls](/guides/common-pitfalls) before shipping. Developers who skip these consistently produce implementations that fail silently when called by agents.
+</Warning>
+
+## Prerequisites
+
+- Basic JavaScript/TypeScript knowledge
+- A web application you want to expose to AI agents
+- Node.js (for testing with the MCP Bridge)
+
+## Step-by-Step Implementation
+
+<Steps>
+
+<Step title="Add Manifest Link to HTML">
+
+In your `index.html` (or template), add this to the `<head>`:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>My App</title>
+
+  <!-- ABP manifest link -->
+  <link rel="abp-manifest" href="/abp.json">
+
+  <!-- Your other tags -->
+</head>
+<body>
+  <!-- Your app -->
+</body>
+</html>
+```
+
+**Key points:**
+- Use `rel="abp-manifest"` exactly (case-sensitive)
+- `href` can be relative (`/abp.json`) or absolute (`https://cdn.example.com/abp.json`)
+- Place it in `<head>`, before or after other `<link>` tags
+- **Framework users:** The link must be in the **server-rendered HTML**. ABP clients discover the manifest via raw HTTP fetch (no JS execution), so a link injected via `useEffect`, `onMounted`, or similar hooks will never be found. Use your framework's server-side metadata API instead. See the [ABP Implementation Guide -- Framework Environments](/guides/implementation-guide#4-step-3--implement-the-abp-interface) for a framework-by-framework table.
+
+</Step>
+
+<Step title="Create the Manifest File">
+
+Create `public/abp.json` (or wherever your static files are served):
+
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "com.example.myapp",
+    "name": "My Awesome App",
+    "version": "1.0.0",
+    "description": "Does cool things with browser APIs",
+    "homepage": "https://myapp.example.com",
+    "icon": "https://myapp.example.com/icon-192.png"
+  },
+  "capabilities": [
+    {
+      "name": "convert.markdownToHtml",
+      "description": "Convert Markdown to HTML",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "markdown": {
+            "type": "string",
+            "description": "Markdown content to convert"
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "gfm": { "type": "boolean", "description": "Enable GitHub Flavored Markdown" }
+            }
+          }
+        },
+        "required": ["markdown"]
+      }
+    }
+  ]
+}
+```
+
+**Key points:**
+- `abp`: Protocol version (currently `"1.0"`)
+- `app.id`: Reverse-domain notation (e.g., `com.yourcompany.appname`)
+- `app.version`: Semantic versioning
+- `capabilities`: Array of capabilities you expose
+- `inputSchema`: JSON Schema defining parameters
+
+</Step>
+
+<Step title="Implement window.abp">
+
+Create `abp-runtime.js`:
+
+```javascript
+// ABP Runtime Implementation
+window.abp = {
+  // Metadata
+  protocolVersion: '0.1',
+  app: {
+    id: 'com.example.myapp',
+    name: 'My Awesome App',
+    version: '1.0.0'
+  },
+
+  // Session state
+  initialized: false,
+  sessionId: null,
+
+  // Initialize session
+  async initialize(params) {
+    console.log('[ABP] Initializing session', params);
+
+    this.initialized = true;
+    this.sessionId = crypto.randomUUID();
+
+    return {
+      sessionId: this.sessionId,
+      protocolVersion: '0.1',
+      app: this.app,
+      capabilities: [
+        { name: 'convert.markdownToHtml', available: true }
+      ],
+      features: {
+        notifications: false,
+        progress: false,
+        elicitation: false,
+        dynamicCapabilities: false
+      }
+    };
+  },
+
+  // Shutdown session
+  async shutdown(params) {
+    console.log('[ABP] Shutting down session', params);
+    this.initialized = false;
+    this.sessionId = null;
+  },
+
+  // Call a capability
+  async call(capability, params = {}) {
+    console.log('[ABP] Calling capability', capability, params);
+
+    // Check session is initialized
+    if (!this.initialized) {
+      return {
+        success: false,
+        error: {
+          code: 'NOT_INITIALIZED',
+          message: 'Call initialize() first',
+          retryable: true
+        }
+      };
+    }
+
+    // Route to capability implementation
+    switch (capability) {
+      case 'convert.markdownToHtml':
+        return await this.capabilities.convertMarkdownToHtml(params);
+
+      default:
+        return {
+          success: false,
+          error: {
+            code: 'UNKNOWN_CAPABILITY',
+            message: `Unknown capability: ${capability}`,
+            retryable: false
+          }
+        };
+    }
+  },
+
+  // Capability implementations
+  capabilities: {
+    async convertMarkdownToHtml({ markdown, options = {} }) {
+      try {
+        const html = marked.parse(markdown, {
+          gfm: options.gfm !== false,
+          breaks: options.breaks || false
+        });
+
+        return {
+          success: true,
+          data: { html }
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: {
+            code: 'CONVERSION_ERROR',
+            message: error.message,
+            retryable: false
+          }
+        };
+      }
+    }
+  },
+
+  // Optional: Runtime discovery methods
+  async listCapabilities() {
+    return [
+      {
+        name: 'convert.markdownToHtml',
+        description: 'Convert Markdown to HTML',
+        available: true
+      }
+    ];
+  },
+
+  async supports(name) {
+    if (name === 'convert.markdownToHtml') {
+      return {
+        supported: true,
+        available: true
+      };
+    }
+    return {
+      supported: false,
+      available: false
+    };
+  },
+
+  // Stubs for optional features
+  notify() {},
+  notifyProgress() {},
+  async elicit() {
+    return {
+      success: false,
+      error: {
+        code: 'NOT_SUPPORTED',
+        message: 'Elicitation not supported',
+        retryable: false
+      }
+    };
+  },
+  async cancel() {
+    return { callId: '', cancelled: false };
+  }
+};
+
+console.log('[ABP] Runtime loaded');
+```
+
+</Step>
+
+<Step title="Load the Runtime">
+
+In your `index.html`, load the ABP runtime:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="abp-manifest" href="/abp.json">
+  <!-- Your other head content -->
+</head>
+<body>
+  <!-- Your app content -->
+
+  <!-- Load ABP runtime BEFORE your app scripts -->
+  <script src="/abp-runtime.js"></script>
+
+  <!-- Your app scripts -->
+  <script src="/app.js"></script>
+</body>
+</html>
+```
+
+**Important:** Load `abp-runtime.js` early so `window.abp` is available when agents connect.
+
+<Note>
+**Framework users:** `window.abp` must be assigned at **module scope** (top-level code that runs when the JS bundle executes), not inside lifecycle hooks like `useEffect` or `onMounted`. Lifecycle hooks run after framework hydration, which may be too late for ABP clients. Guard with `typeof window !== 'undefined'` for SSR safety. See the [ABP Implementation Guide -- Framework Environments](/guides/implementation-guide#4-step-3--implement-the-abp-interface) for details.
+</Note>
+
+</Step>
+
+</Steps>
+
+## Complete Example
+
+Here's a complete minimal ABP app:
+
+### File: `public/index.html`
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Minimal ABP App</title>
+  <link rel="abp-manifest" href="/abp.json">
+</head>
+<body>
+  <h1>Minimal ABP App</h1>
+  <p>This app exposes convert.markdownToHtml via ABP.</p>
+
+  <script src="/abp-runtime.js"></script>
+</body>
+</html>
+```
+
+### File: `public/abp.json`
+
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "com.example.minimal",
+    "name": "Minimal ABP App",
+    "version": "1.0.0"
+  },
+  "capabilities": [
+    {
+      "name": "convert.markdownToHtml",
+      "description": "Convert Markdown to HTML",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "markdown": { "type": "string", "description": "Markdown content to convert" },
+          "options": {
+            "type": "object",
+            "properties": {
+              "gfm": { "type": "boolean", "description": "Enable GitHub Flavored Markdown" }
+            }
+          }
+        },
+        "required": ["markdown"]
+      }
+    }
+  ]
+}
+```
+
+### File: `public/abp-runtime.js`
+
+(Use the code from Step 3 above)
+
+### Serve it
+
+<CodeGroup>
+
+```bash Python
+python3 -m http.server 8000 --directory public
+```
+
+```bash Node.js (npx)
+npx http-server public -p 8000
+```
+
+```bash Node.js (Express)
+npm install express
+node server.js
+```
+
+</CodeGroup>
+
+**File: `server.js`** (if using Express):
+
+```javascript
+const express = require('express');
+const app = express();
+
+app.use(express.static('public'));
+
+app.listen(8000, () => {
+  console.log('Server running at http://localhost:8000');
+});
+```
+
+## Testing Your Implementation
+
+### 1. Manual Test
+
+Open `http://localhost:8000` in Chrome and open DevTools Console:
+
+```javascript
+// Check window.abp exists
+console.log(window.abp);
+
+// Initialize
+const session = await window.abp.initialize({
+  agent: { name: 'test', version: '1.0' },
+  protocolVersion: '0.1',
+  features: { notifications: false, progress: false, elicitation: false }
+});
+console.log('Session:', session);
+
+// Call capability
+const result = await window.abp.call('convert.markdownToHtml', {
+  markdown: '# Hello from ABP\n\nThis is **bold** text.'
+});
+console.log('Result:', result);
+
+// Shutdown
+await window.abp.shutdown();
+```
+
+### 2. Test with MCP Bridge
+
+```bash
+# In your AI agent (e.g., via the MCP Bridge)
+abp_connect("http://localhost:8000")
+
+# Should see:
+# - Connection successful
+# - New tool: abp_convert_markdownToHtml
+
+# Test the capability
+abp_convert_markdownToHtml("# Hello World")
+
+# Should return:
+# { success: true, data: { html: "<h1>Hello World</h1>" } }
+```
+
+### 3. Test Discovery
+
+```bash
+# Fetch manifest
+curl http://localhost:8000/abp.json | jq
+
+# Should return your manifest JSON
+
+# Check HTML
+curl http://localhost:8000 | grep abp-manifest
+
+# Should find: <link rel="abp-manifest" href="/abp.json">
+```
+
+## Common Patterns
+
+### Pattern: Multiple Capabilities
+
+```javascript
+window.abp = {
+  // ... (initialize, shutdown, etc.)
+
+  async call(capability, params = {}) {
+    if (!this.initialized) {
+      return { success: false, error: { code: 'NOT_INITIALIZED', ... } };
+    }
+
+    switch (capability) {
+      case 'convert.markdownToHtml':
+        return await this.capabilities.convertMarkdownToHtml(params);
+
+      case 'export.pdf':
+        return await this.capabilities.exportPdf(params);
+
+      case 'export.html':
+        return await this.capabilities.exportHtml(params);
+
+      default:
+        return { success: false, error: { code: 'UNKNOWN_CAPABILITY', ... } };
+    }
+  },
+
+  capabilities: {
+    async convertMarkdownToHtml({ markdown, options = {} }) {
+      // ...
+    },
+
+    async exportPdf({ html, options = {} }) {
+      // Preferred: return HTML, let agent/client handle PDF generation
+      // Advanced: use window.print() for app-specific rendering
+      // ...
+    },
+
+    async exportHtml({ html, options = {} }) {
+      // Wrap and return HTML document
+      // ...
+    }
+  }
+};
+```
+
+### Pattern: Parameter Validation
+
+```javascript
+async convertMarkdownToHtml({ markdown, options = {} }) {
+  // Validate required params
+  if (!markdown) {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_PARAMS',
+        message: 'Missing required parameter: markdown',
+        retryable: false
+      }
+    };
+  }
+
+  // Validate param types
+  if (typeof markdown !== 'string') {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_PARAMS',
+        message: `Expected string for markdown, got ${typeof markdown}`,
+        retryable: false
+      }
+    };
+  }
+
+  // Execute capability
+  // ...
+}
+```
+
+### Pattern: Progress Reporting
+
+```javascript
+capabilities: {
+  async exportPdf({ html, options = {} }, { progressToken } = {}) {
+    const pages = splitIntoPages(html);
+
+    for (let i = 0; i < pages.length; i++) {
+      await renderPage(pages[i]);
+
+      // Report progress if token provided
+      if (progressToken) {
+        window.__abp_progress({
+          operationId: progressToken,
+          progress: i + 1,
+          total: pages.length,
+          percentage: Math.round(((i + 1) / pages.length) * 100),
+          status: `Rendering page ${i + 1} of ${pages.length}`
+        });
+      }
+    }
+
+    const pdfBlob = await finalizePdf();
+    const pdfBase64 = await blobToBase64(pdfBlob);
+
+    return {
+      success: true,
+      data: {
+        pdf: pdfBase64,
+        mimeType: 'application/pdf'
+      }
+    };
+  }
+}
+```
+
+### Pattern: Using Existing Libraries
+
+```javascript
+// Add marked.js for markdown conversion
+// <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+capabilities: {
+  async convertMarkdownToHtml({ markdown, options = {} }) {
+    try {
+      const html = marked.parse(markdown, {
+        gfm: options.gfm !== false,
+        breaks: options.breaks || false
+      });
+
+      return {
+        success: true,
+        data: { html }
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'CONVERSION_ERROR',
+          message: error.message,
+          retryable: false
+        }
+      };
+    }
+  }
+}
+```
+
+## Best Practices
+
+<Warning>
+For comprehensive guidance, see [Common Pitfalls](/guides/common-pitfalls). The examples below are a quick overview.
+</Warning>
+
+### 1. Return Actual Data, Not Status Messages
+
+```javascript
+// Wrong
+async convertMarkdownToHtml({ markdown }) {
+  const html = marked.parse(markdown);
+  return {
+    success: true,
+    data: { message: 'Conversion successful' }
+  };
+}
+```
+
+```javascript
+// Correct
+async convertMarkdownToHtml({ markdown }) {
+  const html = marked.parse(markdown);
+  return {
+    success: true,
+    data: { html }
+  };
+}
+```
+
+See [Common Pitfalls: Status Messages](/guides/common-pitfalls#anti-pattern-status-messages-instead-of-data) for why this matters.
+
+### 2. Never Trigger Native UI
+
+```javascript
+// Wrong
+async exportPdf({ html }) {
+  window.print();  // Opens print dialog
+  return { success: true, data: { message: 'Print dialog opened' } };
+}
+```
+
+```javascript
+// Correct (for Puppeteer-based client consumers)
+async exportPdf({ html }) {
+  // Render content into print-ready container
+  const container = document.getElementById('print-container');
+  container.innerHTML = html;
+
+  // Signal transport to capture PDF (Puppeteer-based clients intercept this)
+  window.print();
+
+  // Bridge captures PDF via page.pdf() and returns to agent
+  return { success: true, data: { rendered: true } };
+}
+```
+
+See [Common Pitfalls: Native Browser UI](/guides/common-pitfalls#anti-pattern-native-browser-ui) for complete guidance.
+
+### 3. Validate Inputs
+
+Always validate against your `inputSchema`:
+
+```javascript
+async call(capability, params = {}) {
+  // Validate params match the schema
+  const schema = this.getInputSchema(capability);
+  const validation = validateAgainstSchema(params, schema);
+
+  if (!validation.valid) {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_PARAMS',
+        message: validation.error,
+        retryable: false
+      }
+    };
+  }
+
+  // Proceed with capability
+  // ...
+}
+```
+
+### 4. Handle Errors Gracefully
+
+```javascript
+async convertMarkdownToHtml({ markdown, options = {} }) {
+  try {
+    const html = marked.parse(markdown, {
+      gfm: options.gfm !== false,
+      breaks: options.breaks || false
+    });
+    return { success: true, data: { html } };
+  } catch (error) {
+    // Syntax error in input
+    if (error instanceof SyntaxError) {
+      return {
+        success: false,
+        error: {
+          code: 'INVALID_PARAMS',
+          message: 'Invalid markdown syntax',
+          retryable: false
+        }
+      };
+    }
+
+    // Other error
+    return {
+      success: false,
+      error: {
+        code: 'CONVERSION_ERROR',
+        message: error.message,
+        retryable: false
+      }
+    };
+  }
+}
+```
+
+### 5. Keep Manifest in Sync
+
+When you add/remove capabilities, update **both**:
+1. `abp.json` manifest
+2. `window.abp.call()` switch statement
+
+## Common Pitfalls
+
+### Pitfall 1: Manifest Not Served
+
+**Symptom:** Discovery fails
+
+**Cause:** Manifest file not accessible
+
+**Fix:**
+```bash
+# Verify manifest is served
+curl http://localhost:8000/abp.json
+
+# Should return JSON, not 404
+```
+
+### Pitfall 2: CORS Issues
+
+**Symptom:** Manifest fetch fails from different origin
+
+**Fix:** Add CORS headers if manifest is on a different domain:
+
+```javascript
+// Express example
+app.get('/abp.json', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json(manifest);
+});
+```
+
+### Pitfall 3: `window.abp` Not Available
+
+**Symptom:** `window.abp is undefined`
+
+**Fix:**
+1. **Vanilla HTML:** Load `abp-runtime.js` before other scripts
+2. **Framework apps (React, Next.js, Vue, etc.):** Assign `window.abp` at **module scope**, not inside lifecycle hooks (`useEffect`, `onMounted`, etc.) -- they run after hydration, which may be too late. See [ABP Implementation Guide -- Framework Environments](/guides/implementation-guide#4-step-3--implement-the-abp-interface) for details.
+
+### Pitfall 4: Returning Promises Instead of Results
+
+```javascript
+// Wrong
+async call(capability, params) {
+  return this.capabilities.convertMarkdownToHtml(params);  // Returns a Promise
+}
+```
+
+```javascript
+// Correct
+async call(capability, params) {
+  return await this.capabilities.convertMarkdownToHtml(params);  // Awaits and returns result
+}
+```
+
+### Pitfall 5: Not Handling Initialization State
+
+```javascript
+// Wrong
+async call(capability, params) {
+  // No check for initialization
+  return await this.capabilities.convertMarkdownToHtml(params);
+}
+```
+
+```javascript
+// Correct
+async call(capability, params) {
+  if (!this.initialized) {
+    return {
+      success: false,
+      error: { code: 'NOT_INITIALIZED', message: 'Call initialize() first', retryable: true }
+    };
+  }
+  return await this.capabilities.convertMarkdownToHtml(params);
+}
+```
+
+## Chrome Extensions
+
+This guide covers web applications served at HTTP URLs. If you want to expose **Chrome extension APIs** (`chrome.tabs`, `chrome.scripting`, `chrome.bookmarks`, etc.) as ABP capabilities, see the dedicated **[Chrome Extension Guide](/guides/chrome-extensions)**.
+
+Key differences for extensions:
+- No `<link rel="abp-manifest">` or `abp.json` needed -- discovery is runtime-only
+- The ABP entry page is `abp-app.html` (loaded via `chrome-extension://ID/abp-app.html`)
+- Capabilities can call `chrome.*` APIs directly from `window.abp.call()`
+- Connect via `abp_connect({ extensionPath: "/path/to/extension" })` instead of a URL
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Implementation Guide" icon="list-check" href="/guides/implementation-guide">
+    Self-contained guide with feature analysis, capability mapping, and validation checklist
+  </Card>
+  <Card title="Common Pitfalls" icon="triangle-exclamation" href="/guides/common-pitfalls">
+    Critical implementation mistakes to avoid before shipping
+  </Card>
+  <Card title="Conformance Requirements" icon="circle-check" href="/reference/conformance">
+    Verify your app is ABP-compliant
+  </Card>
+  <Card title="MCP Bridge Quick Start" icon="bolt" href="/guides/mcp-bridge-quickstart">
+    Test with the MCP Bridge
+  </Card>
+  <Card title="Capability Taxonomy" icon="sitemap" href="/concepts/capabilities">
+    Explore the capability namespace system
+  </Card>
+  <Card title="Protocol Overview" icon="book" href="/concepts/protocol-overview">
+    Read the full specification
+  </Card>
+  <Card title="App-Side Implementation" icon="server" href="/reference/app-side">
+    See advanced patterns
+  </Card>
+  <Card title="Examples & Tutorials" icon="flask" href="/guides/examples">
+    Working code examples
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [API Reference](/reference/api)
+- [Chrome Extension Guide](/guides/chrome-extensions)
+- [Troubleshooting](/guides/troubleshooting)

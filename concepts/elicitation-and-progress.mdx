@@ -1,0 +1,315 @@
+---
+title: "Elicitation & Progress"
+description: "Bidirectional communication patterns for apps requesting input and reporting progress"
+icon: "arrows-left-right"
+---
+
+## Overview
+
+ABP supports **bidirectional communication**:
+
+- **Elicitation:** Apps request information from agents/users
+- **Progress:** Apps report progress for long-running operations
+
+## Elicitation
+
+Apps can request input from agents/users during capability execution.
+
+### Elicitation Flow
+
+```
+App                                     Agent/User
+  │                                         │
+  │  1. Need user input                     │
+  │     (e.g., "What page size?")           │
+  │                                         │
+  │  2. await elicit({ method, params })    │
+  │────────────────────────────────────────▶│
+  │                                         │
+  │     3. Agent prompts user               │
+  │     4. User responds                    │
+  │                                         │
+  │  5. ElicitationResponse                 │
+  │◀────────────────────────────────────────│
+  │                                         │
+  │  6. Use response in capability          │
+  │                                         │
+```
+
+### Example: Request Page Size
+
+```javascript
+async function exportPdf({ html }) {
+  // Request page size preference
+  const response = await window.__abp_elicitation({
+    method: 'elicitation/input',
+    params: {
+      prompt: 'What page size for the PDF?',
+      schema: {
+        type: 'string',
+        enum: ['letter', 'a4', 'legal'],
+        default: 'letter'
+      }
+    },
+    timeout: 30000
+  });
+
+  if (!response.success) {
+    // User cancelled or timeout
+    return {
+      success: false,
+      error: {
+        code: 'ELICITATION_FAILED',
+        message: 'Failed to get page size',
+        retryable: true
+      }
+    };
+  }
+
+  const pageSize = response.data.value;
+
+  // Generate PDF with selected page size
+  const pdf = await generatePdf(html, { pageSize });
+
+  return {
+    success: true,
+    data: { pdf: pdfBase64, pageSize }
+  };
+}
+```
+
+### Standard Elicitation Methods
+
+| Method | Description | Use Case |
+|--------|-------------|----------|
+| `elicitation/input` | Request required input | "Enter API key" |
+| `elicitation/preference` | Request optional preference | "Preferred format?" |
+| `elicitation/confirm` | Request yes/no confirmation | "Delete this?" |
+| `elicitation/select` | Request selection from options | "Choose page size" |
+| `elicitation/resource` | Request a file/resource | "Select image file" |
+| `sampling/create` | Request AI assistance | "Summarize this text" |
+
+### Example: Confirmation
+
+```javascript
+async function deleteData({ id }) {
+  // Request confirmation
+  const response = await window.__abp_elicitation({
+    method: 'elicitation/confirm',
+    params: {
+      message: 'Delete this item? This cannot be undone.',
+      destructive: true
+    }
+  });
+
+  if (!response.success || !response.data.confirmed) {
+    return {
+      success: false,
+      error: {
+        code: 'USER_CANCELLED',
+        message: 'User cancelled delete',
+        retryable: false
+      }
+    };
+  }
+
+  // Proceed with deletion
+  await delete(id);
+
+  return { success: true, data: { deleted: id } };
+}
+```
+
+### Example: Select from Options
+
+```javascript
+async function exportImage({ content }) {
+  // Request format selection
+  const response = await window.__abp_elicitation({
+    method: 'elicitation/select',
+    params: {
+      prompt: 'Select output format',
+      options: [
+        { value: 'png', label: 'PNG (lossless)' },
+        { value: 'jpg', label: 'JPEG (smaller file)' },
+        { value: 'webp', label: 'WebP (modern)' }
+      ],
+      default: 'png'
+    }
+  });
+
+  if (!response.success) {
+    // Use default
+    const format = 'png';
+  } else {
+    const format = response.data.selected;
+  }
+
+  const image = await render(content, { format });
+
+  return { success: true, data: { image, format } };
+}
+```
+
+## Progress Reporting
+
+Apps report progress for long-running operations.
+
+### Progress Flow
+
+```
+App                                     Agent
+  │                                         │
+  │  1. Start operation                     │
+  │     progressToken: "op-123"             │
+  │                                         │
+  │  2. notifyProgress({ operationId, ... })│
+  │────────────────────────────────────────▶│
+  │                                         │
+  │     3. Agent displays progress          │
+  │                                         │
+  │  4. notifyProgress(50%)                 │
+  │────────────────────────────────────────▶│
+  │                                         │
+  │  5. notifyProgress(100%)                │
+  │────────────────────────────────────────▶│
+  │                                         │
+  │  6. Return result                       │
+  │────────────────────────────────────────▶│
+  │                                         │
+```
+
+### Example: PDF Generation with Progress
+
+```javascript
+async function exportPdf({ html }, { progressToken } = {}) {
+  const pages = paginateHtml(html);
+  const total = pages.length;
+
+  for (let i = 0; i < total; i++) {
+    // Render page
+    await renderPage(pages[i]);
+
+    // Report progress
+    if (progressToken && window.__abp_progress) {
+      window.__abp_progress({
+        operationId: progressToken,
+        progress: i + 1,
+        total,
+        percentage: Math.round(((i + 1) / total) * 100),
+        status: `Rendering page ${i + 1} of ${total}`,
+        stage: 'rendering',
+        estimatedRemaining: (total - i - 1) * 1000  // ~1s per page
+      });
+    }
+  }
+
+  // Finalize
+  if (progressToken && window.__abp_progress) {
+    window.__abp_progress({
+      operationId: progressToken,
+      percentage: 100,
+      status: 'Finalizing PDF',
+      stage: 'finalizing'
+    });
+  }
+
+  const pdfBlob = await finalizePdf();
+
+  return {
+    success: true,
+    data: {
+      pdf: await blobToBase64(pdfBlob),
+      pageCount: total
+    }
+  };
+}
+```
+
+### Progress Info Format
+
+```typescript
+interface ProgressInfo {
+  operationId: string;       // Correlates with progressToken
+  progress: number;          // Current progress value
+  total?: number;            // Total (if known)
+  percentage?: number;       // 0-100
+  status?: string;           // Human-readable status
+  stage?: string;            // Current stage name
+  estimatedRemaining?: number;  // Estimated ms remaining
+}
+```
+
+### Best Practices
+
+**For Apps:**
+1. Report progress at reasonable intervals (not every iteration)
+2. Include meaningful status messages
+3. Provide estimated time remaining if possible
+4. Don't block on progress reporting (fire-and-forget)
+
+**For Clients:**
+1. Display progress to users
+2. Don't block on progress updates
+3. Handle missing progress gracefully
+
+## Standard Notification Events
+
+ABP defines a set of standard notification events that apps can send to agents. These events cover common scenarios like capability changes, state updates, and operation lifecycle.
+
+| Event | Description | Data |
+|-------|-------------|------|
+| `notifications/capabilities/list_changed` | Capability set changed | `{ added: string[], removed: string[], changed: string[] }` |
+| `notifications/state/changed` | App state changed | `{ field: string, oldValue: unknown, newValue: unknown }` |
+| `notifications/operation/started` | Long operation began | `{ operationId: string, capability: string }` |
+| `notifications/operation/completed` | Long operation finished | `{ operationId: string, success: boolean }` |
+| `notifications/error` | Error outside capability call | `{ code: string, message: string }` |
+
+### Example: Sending a State Change Notification
+
+```javascript
+// App notifies the agent that a document is ready
+abp.notify('notifications/state/changed', {
+  field: 'documentReady',
+  oldValue: false,
+  newValue: true
+});
+```
+
+See [API Reference](/reference/api) for the full notification protocol.
+
+## Client-Side Handling
+
+### Setting Up Handlers
+
+```javascript
+// Puppeteer example
+await page.exposeFunction('__abp_elicitation', async (request) => {
+  // Prompt user
+  const value = await promptUser(request.params.prompt);
+
+  return {
+    success: true,
+    data: { value }
+  };
+});
+
+await page.exposeFunction('__abp_progress', (progress) => {
+  // Display progress
+  console.log(`${progress.percentage}% - ${progress.status}`);
+});
+```
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="API Reference" icon="code" href="/reference/api">
+    Complete method signatures
+  </Card>
+  <Card title="Examples" icon="graduation-cap" href="/guides/examples">
+    Working code examples
+  </Card>
+  <Card title="Protocol Overview" icon="diagram-project" href="/concepts/protocol-overview">
+    Complete protocol details
+  </Card>
+</CardGroup>

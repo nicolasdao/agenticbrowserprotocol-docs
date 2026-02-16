@@ -1,0 +1,248 @@
+---
+title: "Versioning"
+description: "How the three version tracks (protocol, spec, bridge) work"
+icon: "code-branch"
+---
+
+This document defines how versioning works in the ABP project. It covers the three independently versioned artifacts, their relationships, and the workflows for releasing each.
+
+## Three Version Tracks
+
+This project has **three independently versioned things**:
+
+| Artifact | What it is | Where the version lives | Current |
+|---|---|---|---|
+| **Protocol version** | The wire format -- what goes in manifests and `initialize()` | `"abp"` field in manifests, `protocolVersion` in code | `0.1` |
+| **Spec document version** | The specification document describing the protocol | `**Version:**` header in `ABP-SPECIFICATION.md` | `0.1.0` |
+| **MCP Bridge version** | The reference client implementation (npm package) | `"version"` in `abp-mcp-bridge/package.json` | `0.1.0` |
+
+### Why three versions?
+
+- **Protocol version** changes only when the wire format changes (new message types, changed field semantics, breaking schema changes). This is what apps and clients negotiate during `initialize()`.
+- **Spec version** changes whenever the document changes -- including editorial fixes, clarifications, new examples, or new sections that don't change the wire format.
+- **Bridge version** changes whenever the MCP Bridge code changes, independent of the spec.
+
+### How they relate
+
+```
+Protocol 0.1 ← described by → Spec 0.1.0, 0.1.1, 0.1.2, ...
+Protocol 0.2 ← described by → Spec 0.2.0, 0.2.1, ...
+Protocol 1.0 ← described by → Spec 1.0.0, 1.0.1, ...
+                                        ↑ First stable release
+
+Bridge 0.1.0, 0.2.0, ... → implements protocol 0.1
+Bridge 0.3.0             → implements protocol 0.2
+Bridge 1.0.0             → implements protocol 1.0
+```
+
+The protocol version is `major.minor` only (no patch). The spec version is full semver (`major.minor.patch`). The relationship:
+
+- **Spec patch bump** (e.g., `0.1.0` → `0.1.1`): Editorial change. Typo fix, better examples, clarification. Protocol version unchanged.
+- **Spec minor bump** (e.g., `0.1.0` → `0.2.0`): Protocol change. New capability, new message type, additive change. Protocol version bumps to match (`0.1` → `0.2`).
+- **Spec major bump** (e.g., `0.x.y` → `1.0.0`): First stable release (or breaking change after stable). Protocol version bumps to match.
+
+## Versioning Scheme
+
+All artifacts use [Semantic Versioning 2.0.0](https://semver.org/):
+
+- **`0.x.y`** = Alpha/development. Anything may change without notice.
+- **`1.0.0`** = First stable release. Public API is committed.
+- **`1.x.y`** (post-stable) = Standard semver: patch for fixes, minor for additions, major for breaking changes.
+
+### When to go to 1.0.0
+
+The project moves to `1.0.0` when:
+1. At least 2-3 independent web apps have implemented ABP successfully
+2. At least 1 client implementation (the bridge) is production-ready
+3. No fundamental protocol design changes are planned
+4. The community has reviewed and validated the core design
+
+Until then, everything stays at `0.x.y`.
+
+## Git Tags
+
+Each release gets a prefixed git tag:
+
+| Artifact | Tag format | Example |
+|---|---|---|
+| Spec | `spec/v<semver>` | `spec/v0.1.0`, `spec/v0.2.0` |
+| Bridge | `bridge/v<semver>` | `bridge/v0.1.0`, `bridge/v0.2.0` |
+
+The protocol version is not tagged separately -- it's tracked by the spec version. A spec tag whose minor version changed implies a protocol version change.
+
+## Commit Convention
+
+This project uses [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
+```
+
+### Types
+
+| Type | When to use |
+|---|---|
+| `feat` | New feature or capability |
+| `fix` | Bug fix |
+| `docs` | Documentation-only change |
+| `refactor` | Code change that doesn't fix a bug or add a feature |
+| `perf` | Performance improvement |
+| `test` | Adding or updating tests |
+| `chore` | Build, tooling, or maintenance |
+
+### Scopes
+
+| Scope | What it covers |
+|---|---|
+| `spec` | ABP specification changes |
+| `bridge` | MCP Bridge code changes |
+| `docs` | Documentation (not the spec itself) |
+| _(none)_ | Repo-wide changes (CI, tooling, README) |
+
+### Examples
+
+```
+feat(spec): add streaming support for binary data
+fix(bridge): handle timeout when page.evaluate fails
+docs: update quick start guide with new examples
+chore(spec): release v0.2.0
+chore(bridge): release v0.2.0
+```
+
+## Release Workflows
+
+### Releasing the Spec
+
+**When:** After accumulating spec changes worth releasing.
+
+<Steps>
+  <Step title="Ensure all changes are committed">
+    Verify your working directory is clean.
+  </Step>
+  <Step title="Add a changelog entry">
+    Add to the `## Changelog` section in `ABP-SPECIFICATION.md`.
+  </Step>
+  <Step title="Run the version bump script">
+    ```bash
+    # Editorial change only (typo, clarification):
+    ./scripts/bump-spec-version.sh 0.1.1
+
+    # Protocol change (new feature, new message type):
+    ./scripts/bump-spec-version.sh 0.2.0 --protocol 0.2
+    ```
+  </Step>
+  <Step title="Review and commit">
+    ```bash
+    git diff
+    git commit -am "chore(spec): release v0.2.0"
+    git tag -a "spec/v0.2.0" -m "ABP Specification v0.2.0"
+    ```
+  </Step>
+</Steps>
+
+### Releasing the Bridge
+
+**When:** After accumulating bridge code changes worth releasing.
+
+<Steps>
+  <Step title="Ensure all changes are committed">
+    Verify working directory is clean.
+  </Step>
+  <Step title="Run the release">
+    ```bash
+    cd abp-mcp-bridge
+
+    # Dry run first:
+    npm run release:dry
+
+    # Actual release (bumps version, generates changelog, commits, tags):
+    npm run release
+    ```
+  </Step>
+  <Step title="Verify results">
+    `release-it` will:
+    - Build the project (`npm run build`)
+    - Bump version in `package.json`
+    - Update `CHANGELOG.md` from conventional commits
+    - Create a commit: `chore(bridge): release v0.2.0`
+    - Create a tag: `bridge/v0.2.0`
+  </Step>
+</Steps>
+
+**For a specific version bump:**
+
+```bash
+npm run release -- --increment minor    # 0.1.0 → 0.2.0
+npm run release -- --increment patch    # 0.1.0 → 0.1.1
+npm run release -- --increment major    # 0.1.0 → 1.0.0
+npm run release -- --increment 0.3.0    # Explicit version
+```
+
+## Changelogs
+
+### Spec Changelog
+
+Maintained manually in the `## Changelog` section at the bottom of `ABP-SPECIFICATION.md`. Each entry should:
+- State the version and date
+- List changes grouped by area (with section references where applicable)
+- Note any protocol version changes explicitly
+
+### Bridge Changelog
+
+Maintained automatically by `release-it` using Conventional Commits at `abp-mcp-bridge/CHANGELOG.md`. Entries are generated from commit messages, so write good commit messages.
+
+## Common Scenarios
+
+<Accordion title="I fixed a typo in the spec">
+- Commit: `docs(spec): fix typo in capability taxonomy`
+- No release needed immediately. Accumulate small fixes.
+- When ready: bump spec patch version (`0.1.0` → `0.1.1`)
+</Accordion>
+
+<Accordion title="I added a new elicitation method to the spec">
+- Commit: `feat(spec): add elicitation/upload method`
+- This is a protocol change. When releasing:
+  - Bump spec minor version (`0.1.0` → `0.2.0`)
+  - Bump protocol version (`--protocol 0.2`)
+</Accordion>
+
+<Accordion title="I fixed a bug in the bridge">
+- Commit: `fix(bridge): handle missing manifest gracefully`
+- When ready: `cd abp-mcp-bridge && npm run release -- --increment patch`
+</Accordion>
+
+<Accordion title="I want to release both spec and bridge">
+- Release the spec first (since the bridge may implement new spec features)
+- Then release the bridge
+</Accordion>
+
+<Accordion title="I'm making a breaking change to the protocol">
+- Before `1.0.0`: just bump the minor version. Breaking changes are expected in `0.x`.
+- After `1.0.0`: bump the major version. This is a big deal -- document migration guides.
+</Accordion>
+
+## Files That Contain Version Numbers
+
+If you need to update versions manually (instead of using the tooling), these are the files:
+
+### Protocol version (`0.1`)
+- All `protocolVersion: '0.1'` and `protocolVersion: "0.1"` in `docs/*.md`
+- All `"abp": "0.1"` in manifest examples across `docs/*.md`
+- `ABP-SPECIFICATION.md` (multiple locations)
+- `abp-mcp-bridge/src/bridge/ABPSessionManager.ts`
+- `skills/abp.md` and `.claude/skills/abp/SKILL.md`
+
+### Spec version (`0.1.0`)
+- `ABP-SPECIFICATION.md` header (`**Version:** 0.1.0`)
+- `README.md` (`**Current Version:** 0.1.0-alpha`)
+
+### Bridge version (`0.1.0`)
+- `abp-mcp-bridge/package.json` (`"version": "0.1.0"`)
+
+<Warning>
+**Use the tooling.** The `bump-spec-version.sh` script and `release-it` exist specifically so you don't have to track these files manually.
+</Warning>

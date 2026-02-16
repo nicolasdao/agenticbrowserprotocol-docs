@@ -3,11 +3,99 @@
   "theme": "mint",
   "name": "Agentic Browser Protocol",
   "colors": {
-    "primary": "#2AB673"
+    "primary": "#2AB673",
+    "light": "#55D799",
+    "dark": "#1E8A56"
   },
+  "favicon": "/favicon.svg",
   "navigation": {
-    "pages": [
-      "introduction"
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "glossary"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/protocol-overview",
+              "concepts/architecture",
+              "concepts/discovery",
+              "concepts/capabilities",
+              "concepts/data-flow",
+              "concepts/elicitation-and-progress",
+              "concepts/security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Building ABP Apps",
+            "pages": [
+              "guides/building-web-apps",
+              "guides/chrome-extensions",
+              "guides/implementation-guide",
+              "guides/common-pitfalls",
+              "guides/examples"
+            ]
+          },
+          {
+            "group": "MCP Bridge",
+            "pages": [
+              "guides/mcp-bridge-quickstart",
+              "guides/mcp-bridge-architecture",
+              "guides/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Protocol API",
+            "pages": [
+              "reference/api",
+              "reference/error-handling",
+              "reference/binary-data",
+              "reference/cancellation",
+              "reference/conformance"
+            ]
+          },
+          {
+            "group": "Implementation",
+            "pages": [
+              "reference/app-side",
+              "reference/client-side",
+              "reference/versioning"
+            ]
+          }
+        ]
+      }
     ]
+  },
+  "topbar": {
+    "links": [
+      {
+        "name": "GitHub",
+        "url": "https://github.com/nicholasdao/agenticbrowserprotocol"
+      }
+    ]
+  },
+  "feedback": {
+    "thumbsRating": true
+  },
+  "footerSocials": {
+    "github": "https://github.com/nicholasdao/agenticbrowserprotocol",
+    "website": "https://github.com/nicholasdao"
   }
 }

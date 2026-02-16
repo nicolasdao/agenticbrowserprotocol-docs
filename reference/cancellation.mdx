@@ -1,0 +1,347 @@
+---
+title: "Cancellation"
+description: "How to cancel long-running operations in ABP"
+icon: "ban"
+---
+
+How to cancel long-running ABP operations before they complete.
+
+## Overview
+
+Cancellation allows agents to abort long-running operations before they complete. This is essential for operations like:
+- PDF generation for large documents (5-60 seconds)
+- AI operations like summarization (3-30 seconds)
+- Image processing (2-20 seconds)
+- Large file exports (10-120 seconds)
+
+Without cancellation, agents must either wait for completion or disconnect entirely (losing the session).
+
+## Why Cancellation Matters
+
+### Design Rationale
+
+Without cancellation, agents face a dilemma:
+- **Wait:** User might cancel the request, but operation keeps running
+- **Disconnect:** Loses the entire session, must reconnect for next operation
+
+With cancellation, agents can abort specific operations while maintaining the session.
+
+### Design Decisions
+
+| Decision | Choice | Alternatives Considered | Rationale |
+|----------|--------|------------------------|-----------|
+| Cancellation identifier | Auto-generated `callId` | Progress token, manual IDs | Every call should be cancellable, not just those with progress tracking. Auto-generation reduces developer burden. |
+| JavaScript API | `AbortSignal` support | Custom cancel methods, Promise extensions | `AbortSignal` is a web standard that developers already know from `fetch()`. Reusing familiar patterns reduces learning curve. |
+| Partial results | Not supported | Include partial data on cancel | For browser operations (PDF, images, canvas), partial results are rarely useful. A half-generated PDF is not a valid PDF. |
+| Capability flag | Not required | `cancellable: boolean` per capability | If an operation completes before cancel arrives, no harm done. Adding flags creates unnecessary complexity. |
+| Cancel acknowledgment | Cancel returns confirmation | Fire-and-forget | Confirmation lets agents know if cancellation succeeded, enabling better error handling and UX. |
+
+### What We Explicitly Chose NOT to Do
+
+1. **No partial results** -- Half-processed outputs are typically useless for browser operations
+2. **No `cancellable` capability flag** -- Adds complexity without clear benefit
+3. **No progress-token-based cancellation** -- Ties cancellation to progress, but you might want to cancel without tracking progress
+
+## Protocol Specification
+
+### Call ID
+
+Every capability call includes a `callId` for identification:
+
+```typescript
+interface CallParams {
+  capability: string;
+  params?: Record<string, unknown>;
+  options?: {
+    timeout?: number;
+    progressToken?: string;
+    callId?: string;  // Auto-generated if not provided
+  };
+}
+```
+
+If `callId` is not provided, the agent-side library MUST generate a unique identifier (e.g., UUID).
+
+### Cancel Request (Agent → App)
+
+```typescript
+interface CancelParams {
+  callId: string;     // ID of the call to cancel
+  reason?: string;    // Optional reason for logging/debugging
+}
+```
+
+### Cancel Response (App → Agent)
+
+```typescript
+interface CancelResponse {
+  callId: string;           // Echo back the call ID
+  cancelled: boolean;       // Whether cancellation succeeded
+  reason?: string;          // Why cancellation failed (if applicable)
+}
+```
+
+### Modified Call Response
+
+When a call is cancelled, its response includes a `cancelled` flag:
+
+```typescript
+interface ABPResponse<T = unknown> {
+  success: boolean;
+  data?: T;
+  error?: ABPError;
+  metadata?: ResponseMetadata;
+  cancelled?: boolean;      // True if operation was cancelled
+}
+```
+
+## Using AbortSignal (Recommended)
+
+The recommended agent-side API uses the standard `AbortSignal` pattern:
+
+```javascript
+// Create an AbortController
+const controller = new AbortController();
+
+// Start the call with the signal
+const resultPromise = abp.call('export.pdf',
+  { html: content, options: { pageSize: 'letter' } },
+  { signal: controller.signal }
+);
+
+// Cancel if user clicks a button
+cancelButton.addEventListener('click', () => {
+  controller.abort();
+});
+
+// Or cancel after a custom timeout
+setTimeout(() => {
+  controller.abort('Operation took too long');
+}, 30000);
+
+// Await the result
+const result = await resultPromise;
+
+if (result.cancelled) {
+  console.log('Operation was cancelled');
+} else if (result.success) {
+  console.log('PDF generated:', result.data);
+} else {
+  console.log('Error:', result.error);
+}
+```
+
+### Why AbortSignal?
+
+Developers already use this pattern with `fetch()`:
+
+```javascript
+// This is familiar to web developers
+const controller = new AbortController();
+fetch(url, { signal: controller.signal });
+controller.abort();
+
+// ABP uses the same pattern
+const controller = new AbortController();
+abp.call(capability, params, { signal: controller.signal });
+controller.abort();
+```
+
+## App-Side Implementation
+
+Apps implement cancellation using `AbortController` internally:
+
+```javascript
+// Track active operations
+const activeOperations = new Map();
+
+async function handleCall(callId, capability, params) {
+  // Create internal abort controller
+  const controller = new AbortController();
+  activeOperations.set(callId, controller);
+
+  try {
+    const result = await executeCapability(capability, params, {
+      signal: controller.signal
+    });
+
+    return { success: true, data: result };
+
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      return { success: false, cancelled: true };
+    }
+    return {
+      success: false,
+      error: { code: 'OPERATION_FAILED', message: error.message, retryable: false }
+    };
+
+  } finally {
+    activeOperations.delete(callId);
+  }
+}
+
+function handleCancel(callId, reason) {
+  const controller = activeOperations.get(callId);
+
+  if (!controller) {
+    // Operation already completed or doesn't exist
+    return { callId, cancelled: false, reason: 'Operation not found or already completed' };
+  }
+
+  controller.abort(reason);
+  return { callId, cancelled: true };
+}
+```
+
+### Example: Cancellable PDF Generation
+
+```javascript
+async function generatePdf(html, options, signal) {
+  const pages = paginateHtml(html);
+
+  for (let i = 0; i < pages.length; i++) {
+    // Check for cancellation between pages
+    if (signal?.aborted) {
+      throw new DOMException('Operation cancelled', 'AbortError');
+    }
+
+    await renderPage(pages[i]);
+  }
+
+  return finalizePdf();
+}
+```
+
+## Transport-Specific Handling
+
+### Puppeteer/Playwright
+
+```javascript
+// Agent-side: expose cancel handler
+await page.exposeFunction('__abp_cancel', (callId, reason) => {
+  return handleCancel(callId, reason);
+});
+
+// Agent-side: send cancel
+async function cancel(callId, reason) {
+  return await page.evaluate(
+    (id, r) => window.__abp_cancel(id, r),
+    callId, reason
+  );
+}
+```
+
+### postMessage
+
+```javascript
+// Agent → App
+iframe.contentWindow.postMessage({
+  type: 'capabilities/cancel',
+  id: messageId,
+  timestamp: Date.now(),
+  payload: { callId: 'call-123', reason: 'User cancelled' }
+}, targetOrigin);
+
+// App → Agent
+window.parent.postMessage({
+  type: 'capabilities/cancel-result',
+  id: messageId,
+  timestamp: Date.now(),
+  payload: { callId: 'call-123', cancelled: true }
+}, targetOrigin);
+```
+
+### WebSocket
+
+```javascript
+// Agent → App
+ws.send(JSON.stringify({
+  type: 'capabilities/cancel',
+  id: messageId,
+  timestamp: Date.now(),
+  payload: { callId: 'call-123', reason: 'Timeout' }
+}));
+```
+
+## Edge Cases
+
+| Scenario | Behavior |
+|----------|----------|
+| Cancel non-existent callId | Return `{ cancelled: false, reason: 'Operation not found' }` |
+| Cancel already-completed call | Return `{ cancelled: false, reason: 'Operation already completed' }` |
+| Cancel already-cancelled call | Return `{ cancelled: true }` (idempotent) |
+| Multiple cancels for same callId | All return same result (idempotent) |
+| Call completes while cancel in flight | Call result returned normally, cancel returns `{ cancelled: false }` |
+| Cancel without active session | Return error `{ code: 'NOT_INITIALIZED' }` |
+
+### Timing Considerations
+
+- **Cancel arrives before operation starts**: Operation is skipped, response has `cancelled: true`
+- **Cancel arrives during operation**: Operation is aborted, response has `cancelled: true`
+- **Cancel arrives after completion**: Cancel response has `cancelled: false`, original result is returned
+
+## Relationship to Timeout
+
+The `timeout` option in calls is **complementary** to cancellation:
+
+| Mechanism | Who decides | When triggered |
+|-----------|-------------|----------------|
+| `timeout` option | Agent, at call time | Automatic, after specified duration |
+| `AbortSignal` | Agent, any time | Manual, based on external events |
+
+Both result in `cancelled: true` in the response. Apps cannot distinguish between timeout-triggered and signal-triggered cancellation (and SHOULD NOT need to).
+
+### Using Both Together
+
+```javascript
+// Using both: timeout as safety net, signal for user-initiated cancel
+const controller = new AbortController();
+
+const result = await abp.call('export.pdf', params, {
+  timeout: 60000,           // Auto-cancel after 60s
+  signal: controller.signal // Manual cancel capability
+});
+
+// User can cancel manually before timeout
+cancelButton.onclick = () => controller.abort();
+```
+
+## Message Flow
+
+```
+Agent                                          App
+  │                                             │
+  │  capabilities/call                          │
+  │  { callId: 'call-123', capability: '...' }  │
+  │────────────────────────────────────────────▶│
+  │                                             │
+  │     ... app starts long operation ...       │
+  │                                             │
+  │◀───── progress (optional) ─────────────────│
+  │                                             │
+  │  capabilities/cancel                        │
+  │  { callId: 'call-123' }                     │
+  │────────────────────────────────────────────▶│
+  │                                             │
+  │     ... app aborts operation ...            │
+  │                                             │
+  │◀─── cancel-result { cancelled: true } ─────│
+  │                                             │
+  │◀─── call-result { cancelled: true } ───────│
+  │                                             │
+```
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    Build apps with cancellation support
+  </Card>
+  <Card title="API Reference" icon="book" href="/reference/api">
+    Full API specification
+  </Card>
+  <Card title="Error Handling" icon="circle-exclamation" href="/reference/error-handling">
+    Cancellation error codes
+  </Card>
+</CardGroup>

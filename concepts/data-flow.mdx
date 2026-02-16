@@ -1,0 +1,285 @@
+---
+title: "Data Flow & Binary Handling"
+description: "How the ABP MCP Bridge handles outputs, binary data, and data routing"
+icon: "arrow-right-arrow-left"
+---
+
+<Note>
+This document covers **client-side data routing** (MCP Bridge behavior). For **protocol-level binary data specification** (how apps should format binary responses across all transports), see [Binary Data Protocol](/reference/binary-data).
+</Note>
+
+## The Problem
+
+If all capability outputs flow through the agent's context window:
+- Large PDFs, images, and HTML consume excessive tokens
+- Agent performance degrades
+- Context limits are hit quickly
+- Non-deterministic orchestration
+
+## The Solution: Always Save to File
+
+All capability results are saved to a file. The agent receives a file path and metadata summary, and decides whether to read the file. This removes the routing decision from the agent entirely -- no `outputMode` to choose, no risk of accidentally inlining large data.
+
+```
+┌────────────────────────────────────────────────────┐
+│             DATA FLOW ROUTING                      │
+├────────────────────────────────────────────────────┤
+│                                                    │
+│  Capability returns result                         │
+│  { success: true, data: { ... } }                 │
+│         │                                          │
+│         ▼                                          │
+│  ┌──────────────┐                                  │
+│  │ Client       │                                  │
+│  │ analyzes     │                                  │
+│  │ response     │                                  │
+│  └──────┬───────┘                                  │
+│         │                                          │
+│         ▼                                          │
+│  Save to file                                      │
+│  Return file path + metadata                       │
+│         │                                          │
+│         ▼                                          │
+│  Agent receives:                                   │
+│  - File path                                       │
+│  - Size / type metadata                            │
+│  - Reads file only if needed                       │
+│                                                    │
+└────────────────────────────────────────────────────┘
+```
+
+## Routing Rules (MCP Bridge)
+
+| Data Type | Routing |
+|-----------|---------|
+| Binary (PDF, images) | Save to file (Base64 to binary) |
+| Text / JSON | Save to file as JSON |
+| Error responses | Return inline (small diagnostic info) |
+
+## How Output Routing Works
+
+After every `abp_call`, the bridge's `DataFlowManager` inspects the ABP response:
+
+```
+Error or no data?
+  |--> Yes --> Return error inline (small diagnostic text)
+  |
+  |--> No --> Check ABP response.data:
+                |
+                |--> Has BinaryData (mimeType + content + binary MIME or base64 encoding)?
+                |      --> Decode + save to file --> return path
+                |      (checks top-level and one level deep in response data)
+                |
+                |--> Has BinaryDataReference (downloadUrl + mimeType)?
+                |      --> Download + save to file --> return path
+                |      (checks top-level and one level deep)
+                |
+                |--> Otherwise (text/JSON data)
+                       --> Save to file as JSON --> return path
+```
+
+## Nested Binary Data Detection
+
+ABP responses commonly nest `BinaryData` objects under property names rather than returning them at the top level. For example, an `export.pdf` capability might return:
+
+```json
+{
+  "document": {
+    "content": "JVBERi0xLjQK...",
+    "mimeType": "application/pdf",
+    "encoding": "base64",
+    "size": 145832
+  },
+  "pageCount": 12
+}
+```
+
+The `DataFlowManager` scans **one level deep** into `response.data` to find `BinaryData` and `BinaryDataReference` objects. When binary data is found nested (e.g., under `document`), sibling properties (e.g., `pageCount`) are collected and returned as metadata alongside the file path:
+
+```
+File saved: /tmp/abp-mcp-bridge/export_pdf_1707234567890.pdf
+Type: application/pdf
+Size: 145832 bytes
+Metadata: {"pageCount":12}
+```
+
+## Binary Data Handling
+
+### App Returns Binary Data
+
+```javascript
+async exportPdf({ html, options }) {
+  const pdfBlob = await generatePdf(html, options);
+  const pdfBase64 = await blobToBase64(pdfBlob);
+
+  return {
+    success: true,
+    data: {
+      pdf: pdfBase64,           // Base64-encoded
+      mimeType: 'application/pdf',
+      size: pdfBlob.size
+    }
+  };
+}
+```
+
+### Client Detects Binary Data
+
+A response is detected as `BinaryData` when it has `content` (string) and `mimeType` (string), and either:
+1. The MIME type is binary (not `text/*` or `application/json`), **or**
+2. The `encoding` field is set to `"base64"`
+
+<Note>
+The second condition is critical: a `text/html` document with `encoding: "base64"` is file data that the agent cannot reason about, so it is always saved to a file regardless of MIME type.
+</Note>
+
+### Client Saves to File
+
+```javascript
+// Bridge detects binary data
+const output = result.data.pdf;
+const mimeType = result.data.mimeType;
+
+// Decode Base64 to binary
+const binary = Buffer.from(output, 'base64');
+
+// Save to file
+const filePath = `/tmp/output-${uuid()}.pdf`;
+fs.writeFileSync(filePath, binary);
+
+// Return file reference
+return { filePath, mimeType, size: binary.length };
+```
+
+### Binary Processing Sequence
+
+When binary data is detected, the bridge:
+
+<Steps>
+  <Step title="Detect encoding">
+    Identifies the encoding (`base64` or `utf-8`)
+  </Step>
+  <Step title="Decode content">
+    Decodes the content to a `Buffer`
+  </Step>
+  <Step title="Determine extension">
+    Maps the MIME type to the correct file extension
+  </Step>
+  <Step title="Save to disk">
+    Saves to the output directory with a timestamped filename
+  </Step>
+  <Step title="Return reference">
+    Returns the file path, MIME type, and size
+  </Step>
+</Steps>
+
+### Supported MIME-to-Extension Mappings
+
+| MIME Type | Extension |
+|-----------|-----------|
+| `application/pdf` | `.pdf` |
+| `image/png` | `.png` |
+| `image/jpeg` | `.jpg` |
+| `image/gif` | `.gif` |
+| `image/webp` | `.webp` |
+| `image/svg+xml` | `.svg` |
+| `audio/mpeg` | `.mp3` |
+| `audio/wav` | `.wav` |
+| `audio/ogg` | `.ogg` |
+| `video/mp4` | `.mp4` |
+| `video/webm` | `.webm` |
+| `application/zip` | `.zip` |
+| `application/json` | `.json` |
+| `text/html` | `.html` |
+| `text/plain` | `.txt` |
+| `text/csv` | `.csv` |
+| `text/markdown` | `.md` |
+| Other | `.bin` |
+
+**Example response for binary output:**
+
+```
+File saved: /tmp/abp-mcp-bridge/export_pdf_1707234567890.pdf
+Type: application/pdf
+Size: 45832 bytes
+```
+
+## Download URLs
+
+If the ABP response contains a `BinaryDataReference` object (has `downloadUrl` and `mimeType`), the bridge downloads the file, saves it to disk, and returns the path. If the download fails, it returns the URL and the error.
+
+## Text/JSON Output Handling
+
+All non-binary successful results are serialized as JSON and saved to a file. The agent receives the file path and size:
+
+```
+Output saved to file: /tmp/abp-mcp-bridge/convert_markdownToHtml_1707234567890.json
+Size: 1234 characters
+```
+
+The agent can then read the file if it needs to inspect the content.
+
+## Configuration
+
+The MCP Bridge supports these environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ABP_OUTPUT_DIR` | `<os.tmpdir()>/abp-mcp-bridge` | Directory where output files (PDFs, images, JSON results) are saved. Created automatically if it doesn't exist. |
+
+## Best Practices
+
+### For App Developers
+
+1. **Return data, not file paths:** Let the client handle file I/O
+2. **Use Base64 for binary:** Encode PDFs, images as Base64
+3. **Include metadata:** Add `mimeType`, `size` fields
+4. **Don't save files yourself:** Let the client manage storage
+
+<Warning>
+Do not return file paths from your app. Return the actual data and let the client handle storage.
+</Warning>
+
+```javascript
+// Wrong - don't do this
+const filePath = '/tmp/output.pdf';
+fs.writeFileSync(filePath, pdfBlob);
+return { success: true, data: { filePath } };
+```
+
+```javascript
+// Correct - return data instead
+const pdfBase64 = await blobToBase64(pdfBlob);
+return {
+  success: true,
+  data: {
+    pdf: pdfBase64,
+    mimeType: 'application/pdf',
+    size: pdfBlob.size
+  }
+};
+```
+
+### For Client Developers
+
+1. **Save all results to files:** Don't give the agent a choice about inline vs file
+2. **Save to predictable locations:** Use a dedicated output directory
+3. **Return file paths, not file contents:** Let the agent read files on demand
+4. **Clean up old files:** Remove temporary files after use
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Binary Data Protocol" icon="file-binary" href="/reference/binary-data">
+    Protocol-level binary data specification for app developers
+  </Card>
+  <Card title="MCP Bridge Quick Start" icon="bolt" href="/guides/mcp-bridge-quickstart">
+    Using `abp_call` in practice
+  </Card>
+  <Card title="MCP Bridge Architecture" icon="sitemap" href="/guides/mcp-bridge-architecture">
+    DataFlowManager component details
+  </Card>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    How to return data from capabilities
+  </Card>
+</CardGroup>

@@ -1,0 +1,699 @@
+---
+title: "Common Pitfalls"
+description: "Critical implementation mistakes to avoid when building ABP apps"
+icon: "triangle-exclamation"
+---
+
+**Critical implementation guidance for ABP app developers.**
+
+<Warning>
+**READ THIS BEFORE SHIPPING.** Developers who skip this section consistently produce implementations that fail silently when called by agents. The mistakes documented here come from real-world diagnostics where agents were unable to complete tasks because the app's capability implementation assumed a human was present.
+</Warning>
+
+---
+
+## The Core Rule
+
+> **Every capability call MUST produce a complete, usable result without any human interaction. Results are delivered either through the `ABPResponse` data, or captured by the transport layer (e.g., `window.print()` intercepted by a Puppeteer-based client).**
+
+### Understanding "Fully Programmatic"
+
+The consumer of your capabilities is a **program** -- an AI agent or automated client -- not a person sitting in front of a browser. When an agent calls `export.pdf`, it expects a PDF. It cannot:
+- Click buttons in a print dialog
+- Dismiss alert boxes
+- Interact with permission prompts
+- Find files in a download bar
+
+However, the **program controlling the browser** (typically a client using Puppeteer or Playwright) **can intercept transport-level signals** like `window.print()` and produce the output itself.
+
+### The Transport Layer as Collaborator
+
+**Key insight:** The "fully programmatic" rule does not mean every capability must accomplish everything within the page's JavaScript context alone.
+
+ABP apps run inside a browser controlled by a transport layer -- typically Puppeteer or Playwright via an ABP client. That transport layer has capabilities of its own:
+
+| Transport Capability | What It Does | Quality |
+|---------------------|--------------|---------|
+| `page.pdf()` | Generates a vector PDF using Chrome's native print engine | Selectable text, proper fonts, accurate CSS, small files |
+| `page.screenshot()` | Captures the page or element as an image | Pixel-perfect rendering |
+| CDP `Page.printToPDF` | Same as `page.pdf()`, available in headful mode | Same quality |
+
+These transport-level capabilities produce **significantly better results** than in-page JavaScript alternatives:
+- **Chrome's print engine**: Vector PDFs with selectable text, proper fonts (~45KB for a typical page)
+- **Canvas-based JS libraries**: Bitmap PDFs where text isn't selectable, inflated file sizes (~500KB+)
+
+### The Correct Mental Model
+
+**The app produces content; the agent handles delivery.**
+
+This is the same pattern across all delivery mechanisms:
+
+| | Phase 1: Content Production | Phase 2: Delivery |
+|---|---|---|
+| **Clipboard** | App returns content (e.g., `convert.markdownToHtml` -> HTML) | Agent uses host tool (`pbcopy`, `xclip`) |
+| **PDF** | App returns content (e.g., HTML) | Agent uses a client-provided PDF tool or saves the HTML |
+| **Download** | App returns file as `BinaryData` | Agent writes to disk |
+
+The browser is just another tool in the agent's toolbox -- like `pbcopy` is for clipboard.
+
+### The Headless Test (Amended)
+
+Before shipping any capability, ask:
+
+> *"Would this produce a complete, usable result for a program controlling the browser, with no human present?"*
+
+This accounts for the transport layer:
+- `window.print()` + status message -- **Fails** (expects human to click dialog)
+- Return HTML content -- **Passes** (agent or client generates PDF from returned HTML)
+- `window.print()` as transport signal -- **Passes** (bridge intercepts, generates PDF -- advanced pattern)
+- `alert("Done!")` -- **Fails** (hangs waiting for human to click OK)
+- ABP elicitation -- **Passes** (agent can respond programmatically)
+
+<Note>
+The browser runs in headless mode by default. Some capabilities may need headful mode (set `ABP_HEADLESS=false`) for GPU, OAuth, or permissions. But the *implementation logic* inside each capability MUST NOT depend on a human being there.
+</Note>
+
+---
+
+## Anti-Pattern: Native Browser UI
+
+The following browser APIs trigger native UI that agents cannot interact with. Using them inside capability handlers violates the core rule.
+
+### `window.print()` -- Wrong Usage
+
+**Anti-pattern:** Calling `window.print()` and returning a status message that expects a human to interact with the print dialog.
+
+```javascript
+// Wrong: Returns a status message expecting human interaction
+async function handleExportPdf(params) {
+  renderContent(params.html);
+  window.print();  // Opens print dialog -- agent can't click "Save as PDF"
+
+  return {
+    success: true,
+    data: {
+      status: 'print_dialog_opened',
+      message: 'Print dialog opened. Save as PDF from the print dialog.'
+    }
+  };
+}
+```
+
+**Why this fails:**
+- The response is `success: true` with valid JSON, so it passes all error checks
+- But it contains **zero bytes of PDF data**
+- The agent receives a 109-byte text description of something a human was supposed to do
+- The capability is named `export.pdf` but delivers no PDF
+
+**Real-world impact:** This exact pattern has been observed in production ABP apps, causing agent workflows to fail silently.
+
+### Preferred: Return HTML Content
+
+**Recommended pattern:** The app exposes a content-producing capability (e.g., `convert.markdownToHtml`) that returns HTML. The agent or client can then generate a PDF from that HTML using whatever tool is available (e.g., a client-provided PDF rendering tool, a server-side library, etc.). No PDF-specific logic needed in the app.
+
+```javascript
+// Recommended: Return HTML content -- agent/client handles PDF delivery
+async function handleConvertMarkdownToHtml(params) {
+  const html = marked.parse(params.markdown, { gfm: true });
+  return { success: true, data: { html } };
+}
+```
+
+The agent's workflow: call `convert.markdownToHtml` -> get HTML -> use a client-side tool to produce a PDF. The app never needs to know about PDF.
+
+### Advanced: `window.print()` as Transport Signal
+
+When the app needs its own CSS context for rendering (custom `@media print` styles, font preloading, complex page layout), it can use `window.print()` as a **transport signal**. Puppeteer-based clients can intercept this at connect time and generate a real PDF.
+
+```javascript
+// Advanced: Prepare content in app's CSS context, signal transport
+async function handleExportPdf(params) {
+  const { html, options = {} } = params;
+
+  const container = document.getElementById('print-container');
+  container.innerHTML = html;
+
+  if (options.pageSize) {
+    document.documentElement.style.setProperty('--page-size', options.pageSize);
+  }
+
+  window.print();
+
+  return { success: true, data: { rendered: true } };
+}
+```
+
+**When to use this pattern:**
+- The app has elaborate `@media print` styles for specific PDF layout
+- The PDF needs fonts, images, or styles from the app's page context
+- You need fine-grained control over page breaks, headers/footers
+
+**When NOT to use:**
+- Most cases -- prefer returning HTML and letting the agent or client handle PDF generation
+- You need transport-agnostic support (WebSocket, postMessage) -- use server-side PDF generation instead (see [Correct Patterns](#pattern-pdf-generation) below)
+
+### `alert()` / `confirm()` / `prompt()`
+
+**Anti-pattern:** Using native browser dialogs.
+
+```javascript
+// Wrong: Native dialog blocks the page -- agent cannot click "OK"
+async function handleDeleteAll(params) {
+  const confirmed = confirm('Are you sure you want to delete all items?');
+  if (!confirmed) {
+    return { success: false, cancelled: true };
+  }
+  await deleteAllItems();
+  return { success: true, data: { deleted: true } };
+}
+```
+
+**Why this fails:**
+- `confirm()` opens a modal dialog
+- The page is **blocked** until a human clicks OK/Cancel
+- The agent has no way to interact with the dialog
+- The call **hangs indefinitely**
+
+**Correct pattern:** Use ABP elicitation.
+
+```javascript
+// Correct: Use ABP elicitation -- the agent can respond programmatically
+async function handleDeleteAll(params) {
+  const response = await abp.elicit({
+    method: 'elicitation/confirm',
+    params: {
+      message: 'Delete all items? This cannot be undone.',
+      destructive: true
+    },
+    timeout: 30000
+  });
+
+  if (!response.success || !response.data.confirmed) {
+    return { success: false, cancelled: true };
+  }
+
+  await deleteAllItems();
+  return { success: true, data: { deleted: true } };
+}
+```
+
+**Impact:** Elicitation requests flow through the ABP client to the agent, which can respond without any browser UI.
+
+### Programmatic Downloads
+
+**Anti-pattern:** Triggering browser downloads.
+
+```javascript
+// Wrong: Triggers browser download -- agent can't access the file
+async function handleExportFile(params) {
+  const blob = new Blob([params.content], { type: params.mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = params.filename;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  return {
+    success: true,
+    data: { status: 'download_started', filename: params.filename }
+  };
+}
+```
+
+**Why this fails:**
+- Browser download bar appears
+- Agent has no access to the downloaded file
+- Response contains no actual file data
+
+**Correct pattern:** Return the data in the response.
+
+```javascript
+// Correct: Return the data in the response
+async function handleExportFile(params) {
+  const content = params.content;
+  const base64 = btoa(unescape(encodeURIComponent(content)));
+
+  return {
+    success: true,
+    data: {
+      file: {
+        content: base64,
+        mimeType: params.mimeType,
+        encoding: 'base64',
+        size: new Blob([content]).size,
+        filename: params.filename
+      }
+    }
+  };
+}
+```
+
+### Delivery Mechanisms: Clipboard and Share
+
+`navigator.clipboard.*` and `navigator.share()` are **delivery mechanisms** -- browser features that route content to humans. Even with auto-granted permissions, writing to a browser's clipboard is useless to an agent in a separate process, and `navigator.share()` opens a native dialog the agent can't interact with.
+
+**The fix is the same:** expose the content-producing step as your ABP capability; skip the delivery step. The agent handles delivery on the host side.
+
+See the [ABP Implementation Guide -- Delivery Mechanisms: Clipboard and Share](/guides/implementation-guide#delivery-mechanisms-clipboard-and-share) for full wrong/right code examples.
+
+### Permission Prompts Without Requirements
+
+**Anti-pattern:** Triggering permission prompts without declaring requirements.
+
+```javascript
+// Wrong: Triggers "Allow camera access?" -- agent can't click "Allow"
+async function handleCameraCapture(params) {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: true });  // May trigger prompt
+  // ... capture frame
+  return { success: true, data: { image: frameData } };
+}
+```
+
+**Correct pattern:** Declare requirements, handle denial with proper error code.
+
+```javascript
+// Correct: Declare requirement, handle denial gracefully
+const cameraCaptureCapability = {
+  name: 'hardware.cameraCapture',
+  description: 'Capture a photo from the device camera',
+  requirements: [
+    {
+      type: 'permission',
+      description: 'Camera permission required',
+      met: false,  // Updated dynamically
+      resolution: 'Grant camera permission to the page origin'
+    }
+  ],
+  // ...
+};
+
+async function handleCameraCapture(params) {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    const track = stream.getVideoTracks()[0];
+    const imageCapture = new ImageCapture(track);
+    const blob = await imageCapture.takePhoto();
+    track.stop();
+    const base64 = await blobToBase64(blob);
+    return { success: true, data: { image: { content: base64, mimeType: 'image/jpeg', encoding: 'base64' } } };
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      return {
+        success: false,
+        error: {
+          code: 'PERMISSION_DENIED',
+          message: 'Camera permission denied',
+          retryable: true,
+          retryAfter: 1000
+        }
+      };
+    }
+    throw err;
+  }
+}
+```
+
+---
+
+## Anti-Pattern: Status Messages Instead of Data
+
+A capability whose name implies it produces output (`export.*`, `convert.*`, `generate.*`, `render.*`) MUST produce that output -- as data in the `ABPResponse`. For PDF, the preferred approach is returning HTML content and letting the agent or client handle PDF generation.
+
+### Real-World Failure Example
+
+An app's `export.pdf` capability returned:
+
+```javascript
+{
+  success: true,
+  data: {
+    status: 'print_dialog_opened',
+    message: 'Print dialog opened. Save as PDF from the print dialog.'
+  }
+}
+```
+
+**What happened:**
+- Response is `success: true` -- passes
+- Response is valid JSON -- passes
+- Response contains **zero bytes of PDF** -- fails
+- Agent receives 109-byte text description instead of the PDF it requested
+
+### The Rule
+
+If your capability is named `export.pdf`, the agent MUST end up with a PDF. This can happen several ways:
+
+1. **Preferred**: The app returns HTML via a `convert.*` capability, and the agent or client generates a PDF
+2. **Inline**: The `ABPResponse` contains the PDF as `BinaryData`
+3. **Transport-captured**: The app called `window.print()` and the client generated the PDF via `page.pdf()` (advanced pattern, Puppeteer-based clients)
+
+What is **NOT acceptable**:
+- Returning HTML and calling it `export.pdf`
+- Returning a message telling someone to use a print dialog
+- Returning a URL to a page where they can manually generate a PDF
+
+### Expected Outputs by Capability Pattern
+
+| Capability Name Pattern | Agent MUST Receive |
+|------------------------|--------------------|
+| `export.*` | The exported file -- as `BinaryData` in the response. (For PDF, prefer returning HTML via a `convert.*` capability and letting the agent or client handle PDF generation) |
+| `convert.*` | The converted content (text or binary depending on target format) |
+| `generate.*` | The generated content |
+| `render.*` | The rendered output (image, HTML, etc.) |
+
+### Examples
+
+```javascript
+// Wrong: export.html
+async function handleExportHtml({ content }) {
+  return {
+    success: true,
+    data: {
+      message: 'HTML is ready for export',
+      status: 'ready'
+    }
+  };
+}
+```
+
+```javascript
+// Correct: export.html
+async function handleExportHtml({ content }) {
+  return {
+    success: true,
+    data: {
+      document: {
+        content: content,
+        mimeType: 'text/html',
+        encoding: 'utf-8',
+        size: new Blob([content]).size,
+        filename: 'export.html'
+      }
+    }
+  };
+}
+```
+
+---
+
+## Anti-Pattern: Inconsistent Capabilities
+
+Agents build expectations from the first capability they call in a namespace. If `export.html` returns the full document inline and `export.pdf` opens a print dialog, the inconsistency is confusing and breaks the agent's workflow.
+
+### The Rule
+
+All capabilities in the same namespace SHOULD produce **consistent results from the agent's perspective**.
+
+If `export.html` returns content as `BinaryData`, then `export.pdf` must also deliver a file -- whether as `BinaryData` in the response or captured via `window.print()`. The internal implementation differs, but the end result the agent receives should be consistent: a file of the declared type.
+
+### Example: Consistent Export Namespace
+
+```javascript
+// Consistent: Both export capabilities return BinaryData in the same shape
+
+// export.html response:
+{
+  success: true,
+  data: {
+    document: {
+      content: '<html>...</html>',
+      mimeType: 'text/html',
+      encoding: 'utf-8',
+      size: 4523,
+      filename: 'export.html'
+    }
+  }
+}
+
+// export.pdf response (same shape, different content):
+{
+  success: true,
+  data: {
+    document: {
+      content: 'JVBERi0xLjQK...',  // Base64-encoded PDF
+      mimeType: 'application/pdf',
+      encoding: 'base64',
+      size: 145832,
+      filename: 'export.pdf'
+    },
+    pageCount: 12
+  }
+}
+```
+
+**From the agent's perspective:** Both capabilities return `data.document` with the same structure. The agent can write generic code to handle any `export.*` capability.
+
+---
+
+## Implementation Checklist
+
+Before shipping any ABP capability, verify every item:
+
+### Core Requirements
+
+- [ ] The capability produces a complete, usable result for a program controlling the browser, with no human present
+- [ ] The response contains actual output data -- not a status message about a side effect like "print dialog opened"
+- [ ] If the capability name implies output (`export.*`, `convert.*`, `generate.*`, `render.*`), the response contains that output as data in the `ABPResponse`. For PDF, prefer returning HTML content and letting the agent or client handle PDF generation.
+
+### Browser APIs -- What's Allowed and What's Not
+
+- [ ] **`window.print()`** -- **Allowed** as an advanced transport signal for PDF generation (clients using Puppeteer can intercept it). Prefer returning HTML and letting the agent or client handle PDF generation. **Not allowed** with a status message expecting human interaction.
+- [ ] **No calls to** `alert()`, `confirm()`, or `prompt()` -- use ABP elicitation instead
+- [ ] **No calls to** `window.open()`
+- [ ] **No programmatic downloads** (click-triggered `<a download>`, `location.href` to blob URLs) -- return data in the response instead
+- [ ] **No clipboard writes** (`navigator.clipboard.*`) -- return content instead; agent handles clipboard on the host side
+- [ ] **No native share invocations** (`navigator.share()`) -- return shareable data instead; agent routes as needed
+- [ ] **No OS file dialogs** (`showSaveFilePicker()`, `showOpenFilePicker()`, `<input type="file">` click) -- for saving: return data in the response; for loading: accept file content as an input parameter
+- [ ] **No OS notifications** (`new Notification()`, `Notification.requestPermission()`) -- return notification-worthy data in the response; agent decides how to surface it
+- [ ] **No reliance on native permission prompts** without declared requirements
+
+### Data Handling
+
+- [ ] Binary output (PDFs, images, audio) is returned as `BinaryData` with `mimeType` and `encoding`
+- [ ] Large files (>10MB) use `BinaryDataReference` with a `downloadUrl`
+- [ ] The `outputSchema` accurately describes what the capability returns
+
+### Consistency
+
+- [ ] All capabilities in the same namespace use the same response shape
+- [ ] If you have `export.html` and `export.pdf`, both produce their declared output format
+
+### Error Handling
+
+- [ ] Permission-gated capabilities declare their requirements
+- [ ] Permission denial returns `PERMISSION_DENIED` with `retryable: true`
+- [ ] If user input is needed, ABP elicitation is used instead of browser dialogs
+
+---
+
+## Correct Patterns for Common Capabilities
+
+### Pattern: PDF Generation
+
+PDF generation is the capability **most likely to be implemented incorrectly**. There are three valid approaches:
+
+#### Approach 1: Return HTML Content (Recommended)
+
+The simplest approach: the app returns HTML content via a `convert.*` or `render.*` capability, and the agent or client generates a PDF from that HTML using whatever tool is available. No PDF-specific logic needed in the app.
+
+```javascript
+// Recommended: Return HTML content -- agent handles PDF delivery
+async function handleConvertMarkdownToHtml(params) {
+  const html = marked.parse(params.markdown, { gfm: true });
+  return { success: true, data: { html } };
+}
+```
+
+The agent's workflow: call `convert.markdownToHtml` -> get HTML -> generate PDF using a client-side tool -> get PDF file.
+
+**What the agent sees:**
+
+```
+File saved: /tmp/abp-mcp-bridge/render_to_pdf_1707234567890.pdf
+Type: application/pdf
+Size: 45832 bytes
+```
+
+#### Approach 2: `window.print()` as Transport Signal (Advanced)
+
+When the app has specific rendering needs (custom `@media print` styles, font preloading, complex page layout), it can use `window.print()` as a transport signal. Puppeteer-based clients can intercept it and generate a PDF.
+
+**Implementation:**
+
+```javascript
+// Advanced: Prepare content in app's CSS context, signal transport
+async function handleExportPdf(params) {
+  const { html, options = {} } = params;
+
+  const container = document.getElementById('print-container');
+  container.innerHTML = html;
+
+  if (options.pageSize) {
+    document.documentElement.style.setProperty('--page-size', options.pageSize);
+  }
+
+  await document.fonts.ready;
+  window.print();
+
+  return { success: true, data: { rendered: true } };
+}
+```
+
+**Companion CSS (required for this approach):**
+
+```css
+@media print {
+  body > *:not(#print-container) { display: none; }
+  #print-container { display: block; }
+  .no-print { display: none; }
+  .page-break { page-break-before: always; }
+}
+
+@page {
+  size: var(--page-size, A4) var(--page-orientation, portrait);
+  margin: 15mm;
+}
+```
+
+#### Approach 3: Server-Side or In-Browser PDF Generation (Fallback)
+
+If your app must work across **all transports** -- including WebSocket and postMessage where there is no Puppeteer to intercept `window.print()` -- generate the PDF via a server endpoint or an in-browser JavaScript library and return it as `BinaryData`.
+
+**Server-side generation** (recommended fallback):
+
+```javascript
+// Fallback: Server-side PDF generation
+async function handleExportPdf(params) {
+  const { html, options = {} } = params;
+
+  // Call server endpoint that uses server-side PDF generation
+  const response = await fetch('/api/generate-pdf', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ html, options })
+  });
+
+  if (!response.ok) {
+    return {
+      success: false,
+      error: { code: 'OPERATION_FAILED', message: 'PDF generation failed', retryable: true }
+    };
+  }
+
+  const pdfBlob = await response.blob();
+  const arrayBuffer = await pdfBlob.arrayBuffer();
+  const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+
+  return {
+    success: true,
+    data: {
+      document: {
+        content: base64,
+        mimeType: 'application/pdf',
+        encoding: 'base64',
+        size: pdfBlob.size,
+        filename: options.filename || 'export.pdf'
+      }
+    }
+  };
+}
+```
+
+**Comparison:**
+
+| Aspect | Approach 1: Return HTML content (Recommended) | Approach 2: `window.print()` (Advanced) | Approach 3: Server-side / JS library (Fallback) |
+|--------|-----------------------------------------------|----------------------------|---------------------------------------|
+| PDF quality | Vector -- selectable text, proper fonts (~45KB) | Vector -- same engine, plus app's CSS context | Vector (server-side) or bitmap (JS libraries, ~500KB+) |
+| App complexity | **None** -- just return content | Medium -- print container, `@media print` CSS | Medium -- server endpoint, encode output |
+| Dependencies | None (client handles PDF) | None (browser's built-in engine) | Server endpoint or JS library |
+| Transport support | Puppeteer/Playwright only | Puppeteer/Playwright only | All transports |
+| When to use | **Most apps.** App returns HTML, agent decides when/how to make a PDF | When the app has specific `@media print` styles or needs its own CSS context | When transport-agnostic support is a hard requirement |
+
+**Which to choose:** Use Approach 1 (return HTML) unless your app has specific rendering needs that require its own CSS context. Use Approach 3 only when transport-agnostic support is a hard requirement.
+
+### Pattern: File Export (Any Type)
+
+For any file type, generate the content in memory and return it as `BinaryData`:
+
+```javascript
+async function handleExportFile(params) {
+  const { content, mimeType, filename } = params;
+
+  // For text content
+  if (mimeType.startsWith('text/') || mimeType === 'application/json') {
+    return {
+      success: true,
+      data: {
+        file: {
+          content: content,
+          mimeType: mimeType,
+          encoding: 'utf-8',
+          size: new Blob([content]).size,
+          filename: filename
+        }
+      }
+    };
+  }
+
+  // For binary content (already base64)
+  return {
+    success: true,
+    data: {
+      file: {
+        content: content,  // Base64 string
+        mimeType: mimeType,
+        encoding: 'base64',
+        size: atob(content).length,
+        filename: filename
+      }
+    }
+  };
+}
+```
+
+### Pattern: User Confirmation via Elicitation
+
+When a capability involves a destructive or irreversible action, use ABP elicitation to get confirmation:
+
+```javascript
+async function handleDestructiveAction(params) {
+  // Ask the agent for confirmation
+  const confirmation = await abp.elicit({
+    method: 'elicitation/confirm',
+    params: {
+      message: `This will permanently delete ${params.count} items. Continue?`,
+      destructive: true
+    },
+    timeout: 30000
+  });
+
+  // Agent declined or elicitation timed out
+  if (!confirmation.success || !confirmation.data.confirmed) {
+    return { success: false, cancelled: true };
+  }
+
+  // Proceed with the destructive action
+  const result = await performDeletion(params);
+  return { success: true, data: result };
+}
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Building ABP Web Apps" icon="code" href="/guides/building-web-apps">
+    Practical guide for making web applications ABP-compatible
+  </Card>
+  <Card title="Examples & Tutorials" icon="flask" href="/guides/examples">
+    Working code examples for ABP implementations
+  </Card>
+  <Card title="Protocol Overview" icon="book" href="/concepts/protocol-overview">
+    Full ABP specification
+  </Card>
+  <Card title="MCP Bridge Quick Start" icon="bolt" href="/guides/mcp-bridge-quickstart">
+    Test with the MCP Bridge
+  </Card>
+</CardGroup>

@@ -1,0 +1,74 @@
+# Agentic Browser Protocol
+
+The Agentic Browser Protocol (ABP) is an open specification that enables web applications and Chrome extensions to expose browser-exclusive capabilities to AI agents through direct API calls rather than fragile UI automation. Web apps expose a programmatic API via window.abp instead of agents manipulating UI elements.
+
+Main project: https://github.com/nicholasdao/agenticbrowserprotocol
+
+## Getting Started
+
+- [Introduction](introduction): What ABP is, why it exists, design principles, relationship to MCP, use cases
+- [Quick Start](quickstart): Fast-track paths for using ABP apps, building web apps, or building Chrome extensions
+- [Glossary](glossary): Definitions of ABP terms (manifest, capability, session, elicitation, transport, etc.)
+
+## Core Concepts
+
+- [Protocol Overview](concepts/protocol-overview): How ABP works - capabilities, sessions, manifest, transport, message flow
+- [Architecture](concepts/architecture): System components, integration model, communication flows, data routing
+- [Discovery & Manifest](concepts/discovery): How agents discover ABP support, manifest format, web vs extension discovery
+- [Capability Taxonomy](concepts/capabilities): Standard namespaces (export, convert, ai, storage), naming conventions, forbidden patterns
+- [Data Flow & Binary Handling](concepts/data-flow): How the MCP Bridge routes binary data to files to prevent context bloat
+- [Elicitation & Progress](concepts/elicitation-and-progress): Bidirectional communication - apps requesting input, reporting progress
+- [Security Considerations](concepts/security): Threat model, input validation, rate limiting, CORS, permission model
+
+## Building ABP Apps
+
+- [Building Web Apps](guides/building-web-apps): Practical quick-start for making web apps ABP-compatible (100-150 lines of code)
+- [Chrome Extensions](guides/chrome-extensions): How to expose chrome.tabs, chrome.scripting APIs as ABP capabilities
+- [Implementation Guide](guides/implementation-guide): Comprehensive process - inventory features, map to capabilities, validate
+- [Common Pitfalls](guides/common-pitfalls): Critical mistakes - native UI dialogs, status messages vs data, delivery mechanisms (READ BEFORE SHIPPING)
+- [Examples & Tutorials](guides/examples): Complete working code - minimal app, markdown converter, PDF generator, canvas renderer
+
+## MCP Bridge
+
+- [MCP Bridge Quick Start](guides/mcp-bridge-quickstart): Install, configure, connect to apps, use capabilities as an agent user
+- [MCP Bridge Architecture](guides/mcp-bridge-architecture): How the bridge works internally - browser management, data flow, tool generation
+- [Troubleshooting](guides/troubleshooting): Common issues - connection failures, capability errors, permission problems
+
+## API Reference
+
+- [API Reference](reference/api): Complete TypeScript definitions for window.abp - all methods, types, schemas
+- [Error Handling](reference/error-handling): Standard error codes, retry strategies, MCP Bridge error patterns
+- [Binary Data Protocol](reference/binary-data): BinaryData format, transport-specific handling, Base64 encoding
+- [Cancellation](reference/cancellation): How to cancel long operations using AbortSignal
+- [Conformance Requirements](reference/conformance): Minimum requirements for ABP-compliant apps and clients
+
+## Implementation
+
+- [App-Side Implementation](reference/app-side): Advanced patterns - modular runtime, capability registry, progress, cancellation, testing
+- [Client-Side Implementation](reference/client-side): Building ABP clients - discovery, browser management, session lifecycle, data routing
+- [Versioning](reference/versioning): Three version tracks (protocol, spec, bridge), release workflows, commit conventions
+
+## Key Concepts
+
+**The Critical Rule:** Every capability must produce complete, usable results for a program with no human present.
+
+**window.abp Interface:**
+- Required: initialize(), shutdown(), call()
+- Optional: listCapabilities(), describeCapability(), supports(), notify(), notifyProgress(), elicit(), cancel()
+
+**Capability Response:**
+- Success: { success: true, data: {...} }
+- Error: { success: false, error: { code, message, retryable } }
+
+**Standard Error Codes:** NOT_INITIALIZED, UNKNOWN_CAPABILITY, INVALID_PARAMS, OPERATION_FAILED, PERMISSION_DENIED, CAPABILITY_UNAVAILABLE, TIMEOUT, NOT_IMPLEMENTED
+
+**Forbidden Patterns:** alert(), confirm(), prompt(), navigator.clipboard, navigator.share(), showSaveFilePicker(), new Notification(), window.open(), programmatic downloads
+
+**Binary Data Format:** { content, mimeType, encoding, size, filename }
+
+**Standard Namespaces:** export.*, convert.*, render.*, ai.*, storage.*, auth.*, tabs.* (extensions), scrape.* (extensions)
+
+## Version
+
+Current: 0.1.0-alpha
+Protocol: 0.1

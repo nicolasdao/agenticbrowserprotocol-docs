@@ -1,12 +1,133 @@
 ---
 title: "Introduction"
-description: "Welcome to the Agentic Browser Protocol documentation"
+description: "Exposing browser capabilities to AI agents through a standardized programmatic interface"
+icon: "book-open"
 ---
 
-# Hello World
+The Agentic Browser Protocol (ABP) is an open specification that enables web applications and Chrome extensions to expose browser-exclusive capabilities — like PDF rendering, authenticated sessions, GPU-accelerated graphics, and privileged `chrome.*` APIs — to AI agents through direct API calls rather than fragile UI automation.
 
-This is a test page to verify Mintlify is working.
+## What is ABP?
+
+ABP inverts the traditional browser automation model. Instead of agents manipulating UI elements through CSS selectors, **applications expose a programmatic API** that agents call directly:
+
+<CodeGroup>
+```javascript Traditional Automation
+// Fragile, breaks when UI changes
+await page.click('#copy-button');
+await page.waitForSelector('.success-toast');
+```
+
+```javascript ABP
+// Explicit contract, reliable
+const result = await abp.call('convert.markdownToHtml', {
+  markdown: '# Hello World\n\nThis is **bold** text.',
+  options: { sanitize: true }
+});
+```
+</CodeGroup>
+
+## Why ABP?
+
+Modern AI agents can read files, execute commands, and make HTTP requests, but certain capabilities remain inaccessible:
+
+| Capability | Why Only Browsers Have It |
+|------------|---------------------------|
+| Canvas/WebGL/WebGPU rendering | Requires browser engine and GPU access |
+| Authenticated sessions | User's cookies, localStorage, and OAuth tokens |
+| On-device AI (Summarizer, Translator) | Chrome's built-in AI APIs run locally in the browser |
+| Accurate HTML/CSS rendering | Only browsers render CSS correctly |
+| PDF generation with CSS | Browser print engines produce vector PDFs with proper fonts |
+| Chrome extension APIs | `chrome.tabs`, `chrome.scripting`, `chrome.bookmarks`, etc. only available to extensions |
+
+ABP provides structured access to these browser-exclusive capabilities.
+
+## Project Components
+
+<CardGroup cols={2}>
+  <Card title="ABP Specification" icon="file-lines">
+    A complete protocol specification defining how web applications expose capabilities to AI agents — session lifecycle, capability system, message formats, and discovery mechanism.
+  </Card>
+  <Card title="ABP MCP Bridge" icon="bridge">
+    A reference implementation: a generic MCP server that connects any MCP-compatible AI agent to any ABP-compliant web application.
+  </Card>
+</CardGroup>
+
+## Design Principles
+
+1. **Browser as Runtime** — The browser is a capability provider, not a UI to manipulate
+2. **Explicit Contracts** — All operations have defined inputs, outputs, and error conditions
+3. **Progressive Enhancement** — Core features work everywhere; advanced features are opt-in
+4. **Transport Agnostic** — Works over Puppeteer, postMessage, or WebSocket
+5. **Future-Proof** — The capability system accommodates APIs that don't exist yet
+6. **Bidirectional** — Apps can request information from agents, not just respond
+7. **Observable** — Long operations report progress; state changes trigger notifications
+
+## Relationship to MCP
+
+ABP is **complementary to** the Model Context Protocol (MCP), not a replacement:
+
+| Aspect | MCP | ABP |
+|--------|-----|-----|
+| **Primary use case** | Build servers that give AI access to data and tools | Make web apps accessible to AI agents |
+| **Deployment model** | Purpose-built server (local or remote) | Web application running in a browser |
+| **Typical capabilities** | Databases, filesystems, APIs, external services | Browser-exclusive: PDF rendering, canvas, user sessions |
+
+The ABP MCP Bridge is an MCP server that connects to ABP apps. Agents use MCP; the bridge translates to ABP.
+
+## Use Cases
+
+### For Web Developers
+
+- Expose your app's features to AI agents — data visualization, document conversion, image processing, on-device AI, and more
+- Make your SaaS app's features available programmatically without rebuilding an API
+- Let agents leverage your app's authenticated sessions and user data
+
+### For AI Agent Developers
+
+- Access browser-exclusive capabilities (canvas/WebGPU rendering, authenticated sessions, on-device AI)
+- Use the reference MCP Bridge implementation as a starting point
+- Build specialized clients for specific ABP apps
+
+### For Researchers & Experimenters
+
+- Explore new ways to leverage browser capabilities in agentic workflows
+- Prototype browser-AI interactions without reinventing infrastructure
+- Build proof-of-concept integrations between existing web apps and agents
+
+## Project Status
+
+**Current Version:** 0.1.0-alpha
+
+The protocol is under active development. We welcome feedback, issue reports, and contributions.
+
+## Open Source & License
+
+ABP is an **open source community project** released under the **BSD 3-Clause License**.
+
+<Note>
+This is a freely available specification built for the community. You can use ABP in commercial and non-commercial projects, build implementations, and contribute to the protocol's evolution.
+</Note>
+
+We encourage:
+- 🔧 Building ABP-compatible apps and extensions
+- 🤝 Contributing improvements to the specification
+- 💬 Participating in design discussions
+- 📚 Sharing implementations and use cases
+- 🌍 Growing the ABP ecosystem
 
 ## Next Steps
 
-If you can see this page live, your Mintlify setup is working correctly.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get up and running with ABP in minutes
+  </Card>
+  <Card title="Protocol Overview" icon="diagram-project" href="/concepts/protocol-overview">
+    Understand the core concepts and how ABP works
+  </Card>
+  <Card title="Build an ABP App" icon="code" href="/guides/building-web-apps">
+    Make your web app ABP-compatible
+  </Card>
+  <Card title="API Reference" icon="book" href="/reference/api">
+    Complete API documentation with TypeScript definitions
+  </Card>
+</CardGroup>

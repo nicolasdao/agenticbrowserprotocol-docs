@@ -1,0 +1,519 @@
+---
+title: "Troubleshooting"
+description: "Common issues and solutions for ABP implementations"
+icon: "wrench"
+---
+
+Common issues and solutions for ABP implementations.
+
+## Quick Diagnosis
+
+| Symptom | Likely Cause | Section |
+|---------|--------------|---------|
+| Browser doesn't launch | Puppeteer/Chrome issue | [Browser Issues](#browser-issues) |
+| "No ABP manifest found" | Manifest link missing | [Discovery Issues](#discovery-issues) |
+| Tools don't appear | Session initialization failed | [Connection Issues](#connection-issues) |
+| Capability fails silently | Returning status instead of data | [Capability Issues](#capability-issues) |
+| Permission denied errors | Headless mode or missing focus | [Permission Issues](#permission-issues) |
+| Outputs not saved to files | Output directory issue | [Data Flow Issues](#data-flow-issues) |
+
+## Browser Issues
+
+### Browser Doesn't Launch
+
+**Symptom:** `abp_connect` fails with "Failed to launch browser"
+
+**Causes:**
+1. Chrome/Chromium not installed
+2. Puppeteer not properly installed
+3. macOS permissions blocking automation
+4. System resources exhausted
+
+**Solutions:**
+
+**1. Check Chrome installation:**
+```bash
+which google-chrome
+which chromium
+```
+
+If not found:
+
+<CodeGroup>
+
+```bash macOS
+brew install --cask google-chrome
+```
+
+```bash Ubuntu
+sudo apt-get install chromium-browser
+```
+
+```bash Puppeteer auto-install
+cd abp-mcp-bridge
+npx puppeteer browsers install chrome
+```
+
+</CodeGroup>
+
+**2. Check Puppeteer installation:**
+```bash
+cd abp-mcp-bridge
+rm -rf node_modules package-lock.json
+npm install
+```
+
+**3. macOS permissions:**
+- System Settings -> Privacy & Security -> Automation
+- Allow Terminal/your IDE to control Chrome
+
+**4. Check system resources:**
+```bash
+# Check available memory
+free -h  # Linux
+vm_stat  # macOS
+
+# Close other browsers/apps if low on memory
+```
+
+### Browser Crashes
+
+**Symptom:** Browser window closes unexpectedly
+
+**Solutions:**
+
+**1. Increase timeout:**
+```json
+{
+  "env": {
+    "ABP_BROWSER_TIMEOUT": "60000"
+  }
+}
+```
+
+**2. Disable GPU acceleration (if crashing on render):**
+```javascript
+const browser = await puppeteer.launch({
+  headless: false,
+  args: ['--disable-gpu']
+});
+```
+
+**3. Check logs:**
+```bash
+# Look for crash reports
+ls -la ~/Library/Logs/DiagnosticReports/  # macOS
+```
+
+## Discovery Issues
+
+### "No ABP manifest found"
+
+**Symptom:** `abp_connect` returns "No ABP manifest link found"
+
+**Diagnosis:**
+```bash
+# 1. Check HTML has manifest link
+curl https://your-app.example.com | grep -i "abp-manifest"
+
+# Should find: <link rel="abp-manifest" href="...">
+```
+
+**Solutions:**
+
+**1. Add manifest link to HTML:**
+```html
+<head>
+  <link rel="abp-manifest" href="/abp.json">
+  <!-- Must be in <head>, not <body> -->
+</head>
+```
+
+<Warning>
+**Important for framework apps:** The manifest link must be in the **server-rendered HTML**. ABP clients discover the manifest via raw HTTP fetch (no JavaScript execution), so a link injected client-side via `useEffect`, `onMounted`, or similar lifecycle hooks will never be found. Use your framework's server-side metadata API instead (e.g., `generateMetadata()` in Next.js App Router, `useHead()` in Nuxt). See [ABP Implementation Guide -- Framework Environments](/guides/implementation-guide#4-step-3--implement-the-abp-interface) for a framework-by-framework table.
+</Warning>
+
+**2. Check manifest is served:**
+```bash
+curl https://your-app.example.com/abp.json | jq
+
+# Should return valid JSON
+```
+
+**3. Check CORS (if manifest on different domain):**
+```bash
+curl -H "Origin: https://agent.example.com" \
+     -I https://cdn.example.com/abp.json
+
+# Should include: Access-Control-Allow-Origin: *
+```
+
+### Invalid Manifest
+
+**Symptom:** "Invalid manifest structure"
+
+**Diagnosis:**
+```bash
+curl https://your-app.example.com/abp.json | jq
+
+# Check required fields: abp, app, capabilities
+```
+
+**Solutions:**
+
+Ensure manifest has all required fields:
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "...",
+    "name": "...",
+    "version": "..."
+  },
+  "capabilities": [...]
+}
+```
+
+## Connection Issues
+
+### Session Initialization Failed
+
+**Symptom:** `abp_connect` succeeds but no dynamic tools appear
+
+**Diagnosis:**
+
+**1. Check browser console:**
+Open the browser window that appeared and check DevTools console for errors.
+
+**2. Check `window.abp` exists:**
+In browser console:
+```javascript
+console.log(window.abp);
+// Should show the ABP object, not undefined
+```
+
+**3. Test initialization manually:**
+```javascript
+const session = await window.abp.initialize({
+  agent: { name: 'test', version: '1.0' },
+  protocolVersion: '0.1',
+  features: { notifications: false, progress: false, elicitation: false }
+});
+console.log(session);
+```
+
+**Solutions:**
+
+**1. Vanilla HTML -- load ABP runtime before app scripts:**
+```html
+<script src="/abp-runtime.js"></script>  <!-- Load first -->
+<script src="/app.js"></script>          <!-- Then app scripts -->
+```
+
+**2. Framework apps (React, Next.js, Vue, etc.) -- assign at module scope:**
+Do NOT use lifecycle hooks (`useEffect`, `onMounted`, `ngOnInit`) to set `window.abp` -- they run after hydration, which may be too late. Assign at module scope instead:
+```javascript
+// Module scope -- runs when the bundle loads, before hydration
+if (typeof window !== 'undefined') {
+  window.abp = createAbpRuntime();
+}
+```
+See [ABP Implementation Guide -- Framework Environments](/guides/implementation-guide#4-step-3--implement-the-abp-interface) for a full framework-by-framework guide.
+
+**3. Check for JavaScript errors:**
+Fix any errors in your ABP runtime or app code.
+
+**4. Use `abp_call` as a fallback:**
+Even if dynamic tools don't appear, you can always invoke capabilities using `abp_call`. Pass the capability name as `capability` and its arguments as `params`:
+```json
+{
+  "capability": "convert.markdownToHtml",
+  "params": { "markdown": "# Hello" }
+}
+```
+Claude Code may not reliably expose dynamically registered MCP tools. `abp_call` is always available after a successful `abp_connect`.
+
+### Connection Timeout
+
+**Symptom:** `abp_connect` times out
+
+**Solutions:**
+
+**1. Increase timeout:**
+```javascript
+abp_connect("http://localhost:3000", { timeout: 60000 })
+```
+
+**2. Check app is actually running:**
+```bash
+curl http://localhost:3000
+# Should return HTML, not connection refused
+```
+
+## Capability Issues
+
+### Capability Returns Status Message Instead of Data
+
+**Symptom:** Capability succeeds but returns useless output
+
+**Example of wrong output:**
+```json
+{
+  "success": true,
+  "data": {
+    "message": "PDF export started"
+  }
+}
+```
+
+**Fix:**
+Return actual data:
+```json
+{
+  "success": true,
+  "data": {
+    "pdf": "base64...",
+    "mimeType": "application/pdf",
+    "pageCount": 5
+  }
+}
+```
+
+See [Common Pitfalls](/guides/common-pitfalls) for details.
+
+### Capability Fails with "INVALID_PARAMS"
+
+**Diagnosis:**
+
+**1. Check capability schema:**
+```javascript
+const capability = await abp.describeCapability('convert.markdownToHtml');
+console.log(capability.inputSchema);
+```
+
+**2. Validate params match schema:**
+```javascript
+// If schema says: { type: "object", properties: { markdown: { type: "string" } } }
+// Then call with:
+abp.call('convert.markdownToHtml', { markdown: "..." });  // Correct
+
+// Not:
+abp.call('convert.markdownToHtml', { text: "..." });     // Wrong property name
+```
+
+**Solutions:**
+
+Match parameter names and types exactly to the schema.
+
+## Permission Issues
+
+### "Permission Denied" Errors
+
+**Symptom:** Capabilities fail with `PERMISSION_DENIED` error
+
+**Common causes:**
+1. Running in headless mode
+2. Browser window doesn't have focus
+3. User hasn't granted permission
+
+**Solutions:**
+
+**1. Use headful mode:**
+```bash
+abp_connect("http://localhost:3000")  # Default is headful
+
+# Not:
+abp_connect("http://localhost:3000", { headless: true })
+```
+
+**2. Ensure browser window has focus:**
+Click on the browser window before the capability is called.
+
+**3. Grant permissions:**
+
+For hardware capabilities (camera, microphone), the user must manually grant permission or the client must pre-grant via browser context.
+
+## Data Flow Issues
+
+### Outputs Not Saved to Files
+
+**Symptom:** Expected a file path but got inline data or an error
+
+**Diagnosis:**
+```bash
+# Check output directory exists and is writable
+ls -la /tmp
+
+# Check bridge environment variables
+echo $ABP_OUTPUT_DIR
+```
+
+**Solutions:**
+
+**1. Set output directory:**
+```json
+{
+  "env": {
+    "ABP_OUTPUT_DIR": "/Users/alice/abp-outputs"
+  }
+}
+```
+
+**2. Ensure app returns Base64 for binary data:**
+```javascript
+// App should return:
+{
+  success: true,
+  data: {
+    pdf: "base64encodeddata...",
+    mimeType: "application/pdf"
+  }
+}
+```
+
+<Note>
+All successful capability results are saved to files. Error responses are the only results returned inline (they are small diagnostic text, not content).
+</Note>
+
+### File Not Found After Capability Call
+
+**Symptom:** Bridge returns `{ filePath: "/tmp/output.pdf" }` but file doesn't exist
+
+**Diagnosis:**
+```bash
+# Check if file was created
+ls -la /tmp/output-*.pdf
+
+# Check bridge logs
+# (Bridge logs to stderr)
+```
+
+**Solutions:**
+
+**1. Check write permissions:**
+```bash
+ls -la /tmp
+# Should be writable
+```
+
+**2. Check disk space:**
+```bash
+df -h /tmp
+```
+
+## Logging and Debugging
+
+### Enable Debug Logging
+
+```json
+{
+  "env": {
+    "ABP_LOG_LEVEL": "debug"
+  }
+}
+```
+
+### View Bridge Logs
+
+Bridge logs go to **stderr** (stdout is JSON-RPC):
+
+```bash
+# In Claude Code, logs appear in debug console
+# Or run bridge manually:
+node build/index.js 2> bridge.log
+```
+
+### Browser Console
+
+Open DevTools in the browser window:
+- Right-click -> Inspect
+- Or: Cmd+Option+I (macOS), Ctrl+Shift+I (Windows/Linux)
+
+Check for:
+- JavaScript errors
+- ABP runtime errors
+- Capability execution logs
+
+### Test Capabilities Manually
+
+In browser console:
+```javascript
+// Initialize
+const session = await window.abp.initialize({
+  agent: { name: 'test', version: '1.0' },
+  protocolVersion: '0.1',
+  features: { notifications: false, progress: false, elicitation: false }
+});
+
+// Call capability
+const result = await window.abp.call('convert.markdownToHtml', {
+  markdown: '# Test\n\nHello **world**'
+});
+
+console.log(result);
+```
+
+## Getting Help
+
+If you're still stuck:
+
+1. **Check the specification:** [Protocol Overview](/concepts/protocol-overview)
+2. **Review examples:** [Examples & Tutorials](/guides/examples)
+3. **Open an issue:** Include:
+   - ABP spec version
+   - MCP Bridge version (if using)
+   - Browser version
+   - Error messages
+   - Steps to reproduce
+   - Relevant code snippets
+
+## Common Mistakes
+
+### For App Developers
+
+- Returning status messages instead of actual data
+- Triggering native UI (alert, confirm, window.print)
+- Not validating inputs
+- Not handling errors gracefully
+- Manifest not accessible or invalid
+
+### For Client Developers
+
+- Using headless mode when headful is needed
+- Not checking `success` flag
+- Not handling retryable errors
+- Not routing large outputs to files
+- Not cleaning up temporary files
+
+## Limitations and Known Issues
+
+These are known limitations of the current MCP Bridge implementation. See [MCP Bridge Architecture: Limitations](/guides/mcp-bridge-architecture#limitations-and-known-issues) for more detail.
+
+**One connection at a time.** The bridge supports a single browser/session. Connecting to a new app disconnects from the current one. There is no session pooling.
+
+**Headful mode required.** Many ABP capabilities (authenticated sessions, GPU/WebGPU, permissions prompts, downloads) require a visible browser window. Headless mode (`ABP_HEADLESS=true`) will work for basic capabilities but not for the features that make ABP valuable.
+
+**Dynamic tool registration is unreliable.** Claude Code does not reliably expose dynamically registered MCP tools to the LLM. Use `abp_call` as the reliable fallback -- it can invoke any capability by name.
+
+**Elicitation is v1 (auto-respond).** When an ABP app requests input from the agent (elicitation), the bridge auto-responds with defaults or cancels. Full support for routing elicitation requests to the user via MCP sampling is planned for a future version.
+
+**Print override timing.** The `BrowserEventGuard` overrides `window.print()` via `page.evaluate()` after the page has loaded. If the app captures a reference to `window.print` during its initial script execution (before the guard attaches), the override won't intercept the call. The fix is to use `page.evaluateOnNewDocument()` -- this is tracked as a pending improvement.
+
+**Browser profile.** The bridge launches Chromium with a fresh profile each time. Authenticated sessions (cookies, localStorage) from the user's regular browser are not available.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Building ABP Web Apps" icon="code" href="/guides/building-web-apps">
+    Avoid common app pitfalls
+  </Card>
+  <Card title="MCP Bridge Quick Start" icon="bolt" href="/guides/mcp-bridge-quickstart">
+    Proper setup guide
+  </Card>
+  <Card title="Examples" icon="flask" href="/guides/examples">
+    Working code to compare against
+  </Card>
+  <Card title="API Reference" icon="book" href="/reference/api">
+    Authoritative reference
+  </Card>
+</CardGroup>

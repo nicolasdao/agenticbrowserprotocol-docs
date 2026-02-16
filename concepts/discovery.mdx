@@ -1,0 +1,361 @@
+---
+title: "Discovery & Manifest"
+description: "How agents discover ABP support and what capabilities apps offer"
+icon: "magnifying-glass"
+---
+
+## Overview
+
+ABP supports two discovery mechanisms depending on the type of ABP server:
+
+**Web apps (HTTP URLs):** Pre-flight HTTP-based discovery -- fetch the HTML `<head>`, parse the manifest link, fetch the manifest JSON. This lets agents validate ABP support without launching a browser.
+
+**Chrome extensions (local directory):** Runtime-only discovery -- launch the browser with `--load-extension`, discover the extension ID from browser targets, navigate to the ABP page, and discover capabilities via `initialize()` + `listCapabilities()`. No HTTP pre-flight is possible because `chrome-extension://` URLs are not accessible from Node.js.
+
+## Web App Discovery
+
+Before launching a browser, agents can check if a web app supports ABP by:
+1. Fetching the HTML `<head>`
+2. Parsing the manifest link
+3. Fetching the manifest JSON
+
+This allows agents to validate ABP support and filter apps by capability without the overhead of browser automation.
+
+## Discovery Flow
+
+```
+┌───────────────────────────────────────────────────┐
+│           DISCOVERY FLOW                          │
+├───────────────────────────────────────────────────┤
+│                                                   │
+│  1. Fetch HTML head (streaming)                   │
+│     GET https://app.example.com                   │
+│     → <link rel="abp-manifest" href="/abp.json">  │
+│                                                   │
+│  2. Parse manifest link                           │
+│     Extract href="/abp.json"                      │
+│     → https://app.example.com/abp.json            │
+│                                                   │
+│  3. Fetch manifest                                │
+│     GET https://app.example.com/abp.json          │
+│     → { abp, app, capabilities }                  │
+│                                                   │
+│  4. Validate manifest                             │
+│     Check required fields                         │
+│     Check capabilities                            │
+│                                                   │
+│  5. Decision                                      │
+│     Has required capability? → Launch browser     │
+│     Missing capability? → Skip or warn            │
+│                                                   │
+└───────────────────────────────────────────────────┘
+```
+
+## Manifest Link
+
+Apps MUST include this in their HTML `<head>`:
+
+```html
+<link rel="abp-manifest" href="/abp.json">
+```
+
+**Variations:**
+```html
+<!-- Relative path -->
+<link rel="abp-manifest" href="/abp.json">
+<link rel="abp-manifest" href="/api/v1/abp-manifest.json">
+
+<!-- Absolute URL -->
+<link rel="abp-manifest" href="https://app.example.com/abp.json">
+
+<!-- CDN-hosted -->
+<link rel="abp-manifest" href="https://cdn.example.com/manifests/app.json">
+```
+
+## Manifest Format
+
+```json
+{
+  "abp": "0.1",
+  "app": {
+    "id": "com.example.myapp",
+    "name": "My App",
+    "version": "1.0.0",
+    "description": "Brief description",
+    "homepage": "https://example.com",
+    "icon": "https://example.com/icon-192.png",
+    "support": "https://example.com/support"
+  },
+  "capabilities": [
+    {
+      "name": "convert.markdownToHtml",
+      "description": "Convert Markdown to HTML",
+      "inputSchema": { /* JSON Schema */ },
+      "outputSchema": { /* JSON Schema */ },
+      "experimental": false,
+      "deprecated": false
+    }
+  ]
+}
+```
+
+<Tip>
+The `icon` field should point to a **192x192 PNG** image for best compatibility across agent UIs and app directories.
+</Tip>
+
+## Example: Discovery Implementation
+
+```javascript
+async function discoverABP(url) {
+  // Step 1: Fetch HTML head
+  const html = await fetchHead(url);
+
+  // Step 2: Parse manifest link
+  const manifestUrl = parseManifestLink(html, url);
+
+  if (!manifestUrl) {
+    return { supported: false, reason: 'No manifest link found' };
+  }
+
+  // Step 3: Fetch manifest
+  const manifest = await fetch(manifestUrl).then(r => r.json());
+
+  // Step 4: Validate
+  if (!manifest.abp || !manifest.app || !manifest.capabilities) {
+    return { supported: false, reason: 'Invalid manifest' };
+  }
+
+  // Step 5: Return discovery result
+  return {
+    supported: true,
+    manifest,
+    hasCapability: (name) => manifest.capabilities.some(c => c.name === name)
+  };
+}
+
+async function fetchHead(url) {
+  const response = await fetch(url);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let html = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    html += decoder.decode(value, { stream: true });
+
+    // Stop once we have </head>
+    if (html.includes('</head>')) {
+      reader.cancel();
+      break;
+    }
+
+    // Safety limit
+    if (html.length > 50000) {
+      reader.cancel();
+      break;
+    }
+  }
+
+  return html;
+}
+
+function parseManifestLink(html, baseUrl) {
+  const patterns = [
+    /<link[^>]+rel=["']abp-manifest["'][^>]+href=["']([^"']+)["']/i,
+    /<link[^>]+href=["']([^"']+)["'][^>]+rel=["']abp-manifest["']/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match) {
+      return new URL(match[1], baseUrl).href;
+    }
+  }
+
+  return null;
+}
+```
+
+## Usage
+
+```javascript
+// Check if app supports ABP
+const discovery = await discoverABP('https://markdown-app.example.com');
+
+if (discovery.supported) {
+  console.log('App:', discovery.manifest.app.name);
+  console.log('Capabilities:', discovery.manifest.capabilities.map(c => c.name));
+
+  // Check for specific capability
+  if (discovery.hasCapability('convert.markdownToHtml')) {
+    // Worth launching browser for this app
+    await launchBrowserAndConnect(url);
+  }
+} else {
+  console.log('Not an ABP app:', discovery.reason);
+}
+```
+
+## Chrome Extension Discovery
+
+Chrome extensions cannot be discovered via HTTP. Instead, the client uses **browser-side discovery**:
+
+```
+┌───────────────────────────────────────────────────────┐
+│           EXTENSION DISCOVERY FLOW                     │
+├───────────────────────────────────────────────────────┤
+│                                                       │
+│  1. Launch browser with extension                     │
+│     puppeteer.launch({                                │
+│       args: ['--load-extension=/path/to/ext',         │
+│              '--disable-extensions-except=/path']      │
+│     })                                                │
+│                                                       │
+│  2. Discover extension ID                             │
+│     Poll browser.targets() for URLs matching          │
+│     chrome-extension://[32-char-id]/                   │
+│     Extract extension ID from the hostname            │
+│                                                       │
+│  3. Navigate to ABP page                              │
+│     chrome-extension://ID/abp-app.html                │
+│     (configurable — "abp-app.html" is the default)    │
+│                                                       │
+│  4. Runtime discovery                                 │
+│     Wait for window.abp                               │
+│     Call initialize() → get app info + capabilities   │
+│     Call listCapabilities() → get full schemas         │
+│                                                       │
+│  5. Build synthetic manifest                          │
+│     Construct ABPManifest from runtime data            │
+│     (used internally for capability registry)         │
+│                                                       │
+└───────────────────────────────────────────────────────┘
+```
+
+### Why No HTTP Discovery?
+
+- `chrome-extension://` URLs are only accessible within the browser process -- Node.js cannot HTTP-fetch them
+- Extensions don't serve content over HTTP, so there is no HTML `<head>` to parse for a manifest link
+- The extension ID is dynamically assigned at load time (based on the extension's directory), so the URL isn't known in advance
+
+### What This Means for Extension Developers
+
+- **No `<link rel="abp-manifest">` needed** -- the ABP page doesn't need a manifest link
+- **No `abp.json` file required** -- though you can include one for documentation
+- **`listCapabilities()` is essential** -- it's the only way the client discovers full capability schemas
+- **`initialize()` must return accurate `capabilities`** -- this is the primary discovery mechanism
+
+See [Chrome Extension Guide](/guides/chrome-extensions) for complete implementation details.
+
+## Manifest vs Runtime
+
+| Aspect | Manifest | Runtime (`initialize()`) |
+|--------|----------|--------------------------|
+| **When** | Before browser launch | After connection |
+| **Accuracy** | May be stale | Always current |
+| **Purpose** | Pre-flight filtering | Authoritative state |
+| **Availability** | Static snapshot | Real-time |
+
+**Use manifest for:**
+- Deciding whether to load an app
+- Filtering apps by capability
+- UI display (app name, description, icon)
+
+**Use `initialize()` for:**
+- Getting actual capability availability
+- Real-time requirements status
+- Starting a session
+
+## Caching
+
+Manifests SHOULD be cached:
+
+```http
+Cache-Control: public, max-age=3600
+Content-Type: application/json
+```
+
+Clients can cache manifests to reduce network requests.
+
+## CORS
+
+If the manifest is on a different origin, CORS headers are required:
+
+```http
+Access-Control-Allow-Origin: *
+```
+
+## Edge Cases
+
+| Scenario | Behavior |
+|----------|----------|
+| Multiple `<link rel="abp-manifest">` tags | Use the first one encountered |
+| Manifest URL returns 404 | Discovery fails - app is misconfigured |
+| Manifest is malformed JSON | Discovery fails - app is misconfigured |
+| Manifest exists but `window.abp` missing at runtime | Runtime error - app is broken |
+| Manifest on different origin without CORS | Discovery fails - cannot fetch |
+| HTML has no `</head>` tag | Continue reading until safety limit, then fail |
+
+## Version Compatibility
+
+The manifest's `abp` field declares the protocol version. Agents SHOULD handle version mismatches gracefully:
+
+- **Same major version**: Proceed normally.
+- **Higher major version**: Warn but attempt `initialize()` - runtime negotiation may succeed.
+- **Lower major version**: Proceed if agent supports backward compatibility.
+
+```javascript
+function checkVersionCompatibility(manifestVersion, supportedVersion) {
+  const [manifestMajor, manifestMinor] = manifestVersion.split('.').map(Number);
+  const [supportedMajor, supportedMinor] = supportedVersion.split('.').map(Number);
+
+  if (manifestMajor === supportedMajor) {
+    return {
+      compatible: true,
+      action: 'proceed',
+      message: `Protocol versions compatible (manifest: ${manifestVersion}, supported: ${supportedVersion})`
+    };
+  }
+
+  if (manifestMajor > supportedMajor) {
+    return {
+      compatible: false,
+      action: 'warn-and-attempt',
+      message: `Manifest version ${manifestVersion} is newer than supported ${supportedVersion} - attempting initialize(), runtime negotiation may succeed`
+    };
+  }
+
+  // manifestMajor < supportedMajor
+  return {
+    compatible: false,
+    action: 'proceed-with-fallback',
+    message: `Manifest version ${manifestVersion} is older than supported ${supportedVersion} - proceeding with backward compatibility`
+  };
+}
+
+// Usage
+const result = checkVersionCompatibility('0.1', '0.1');
+// → { compatible: true, action: 'proceed', message: '...' }
+
+const result2 = checkVersionCompatibility('2.0', '1.0');
+// → { compatible: false, action: 'warn-and-attempt', message: '...' }
+
+const result3 = checkVersionCompatibility('0.1', '1.0');
+// → { compatible: false, action: 'proceed-with-fallback', message: '...' }
+```
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    Create a manifest for your app
+  </Card>
+  <Card title="MCP Bridge Quick Start" icon="bolt" href="/guides/mcp-bridge-quickstart">
+    Use discovery in practice
+  </Card>
+  <Card title="Protocol Overview" icon="diagram-project" href="/concepts/protocol-overview">
+    Complete protocol details
+  </Card>
+</CardGroup>

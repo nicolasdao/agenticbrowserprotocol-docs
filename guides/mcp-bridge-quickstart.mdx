@@ -1,0 +1,465 @@
+---
+title: "MCP Bridge Quick Start"
+description: "Set up the ABP MCP Bridge to use ABP apps with AI agents"
+icon: "bolt"
+---
+
+Get up and running with the ABP MCP Bridge to use ABP-compliant web applications from Claude Code or other MCP-compatible agents.
+
+## What is the MCP Bridge?
+
+The ABP MCP Bridge is a generic MCP server that:
+- Connects to any ABP-compliant web application
+- Discovers and exposes its capabilities as MCP tools
+- Manages browser lifecycle automatically
+- Routes data efficiently (large outputs to files)
+- Handles all ABP protocol complexity
+
+**You don't need to know ABP internals.** The bridge translates ABP into familiar MCP tools.
+
+## Prerequisites
+
+- **Node.js** 18+ and npm
+- **Claude Code** or another MCP-compatible agent
+- **Chrome/Chromium** (installed automatically by Puppeteer if missing)
+
+## Installation
+
+<Steps>
+
+<Step title="Clone and Build">
+
+```bash
+# Clone the repository
+cd /path/to/your/workspace
+git clone https://github.com/nicholasguo/agenticbrowserprotocol.git
+cd agenticbrowserprotocol/abp-mcp-bridge
+
+# Install dependencies
+npm install
+
+# Build TypeScript
+npm run build
+```
+
+After building, the compiled server is at `build/index.js`.
+
+</Step>
+
+<Step title="Verify Build">
+
+```bash
+# Check that build succeeded
+ls -la build/index.js
+
+# Output should show the file exists
+-rw-r--r--  1 user  staff  <size>  <date>  build/index.js
+```
+
+</Step>
+
+</Steps>
+
+## Configuration
+
+### Option 1: Per-Project Configuration (Recommended)
+
+Create `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "abp": {
+      "command": "node",
+      "args": ["/absolute/path/to/abp-mcp-bridge/build/index.js"]
+    }
+  }
+}
+```
+
+Replace `/absolute/path/to/abp-mcp-bridge` with the actual path.
+
+**Example:**
+```json
+{
+  "mcpServers": {
+    "abp": {
+      "command": "node",
+      "args": ["/Users/alice/projects/agenticbrowserprotocol/abp-mcp-bridge/build/index.js"]
+    }
+  }
+}
+```
+
+### Option 2: Global Configuration
+
+Edit `~/.claude/config.json`:
+
+```json
+{
+  "mcpServers": {
+    "abp": {
+      "command": "node",
+      "args": ["/absolute/path/to/abp-mcp-bridge/build/index.js"]
+    }
+  }
+}
+```
+
+### Option 3: Environment-Specific Path
+
+Use an environment variable:
+
+```json
+{
+  "mcpServers": {
+    "abp": {
+      "command": "node",
+      "args": ["${ABP_BRIDGE_PATH}/build/index.js"],
+      "env": {
+        "ABP_BRIDGE_PATH": "/Users/alice/projects/agenticbrowserprotocol/abp-mcp-bridge"
+      }
+    }
+  }
+}
+```
+
+Then set the environment variable:
+```bash
+export ABP_BRIDGE_PATH=/Users/alice/projects/agenticbrowserprotocol/abp-mcp-bridge
+```
+
+## First Connection
+
+<Steps>
+
+<Step title="Start Claude Code">
+
+```bash
+# Start a new session
+claude-code
+```
+
+</Step>
+
+<Step title="Check Available Tools">
+
+The bridge starts with five static tools:
+
+```
+Available MCP tools:
+- abp_connect(url: string)
+- abp_disconnect()
+- abp_status()
+- abp_call(capability: string, params?: object)
+- abp_render_to_pdf(html: string, options?: object)
+```
+
+</Step>
+
+<Step title="Connect to an ABP App">
+
+```
+You: Connect to https://markdown-converter.example.com using abp_connect
+```
+
+Claude Code will:
+1. Discover the app's ABP manifest
+2. Launch a browser (headless by default -- set `ABP_HEADLESS=false` to see the window)
+3. Load the app
+4. Initialize an ABP session
+5. Expose the app's capabilities as MCP tools
+
+</Step>
+
+<Step title="See New Tools">
+
+After connection, you'll see dynamic tools:
+
+```
+New tools available:
+- abp_convert_markdownToHtml(markdown: string, options?: object)
+- abp_export_pdf(html: string, options?: object)
+- abp_export_image(html: string, format?: string)
+```
+
+**Naming convention:**
+- ABP capability: `convert.markdownToHtml`
+- MCP tool: `abp_convert_markdownToHtml`
+
+(Dots become underscores, prefixed with `abp_`)
+
+<Note>
+Not all MCP clients support dynamic tool registration reliably. Claude Code, for instance, may not expose dynamically registered tools to the LLM. If dynamic tools don't appear, use `abp_call` instead -- it can invoke any capability and is always available. See [Limitations and Known Issues](/guides/mcp-bridge-architecture#limitations-and-known-issues) for details.
+</Note>
+
+</Step>
+
+</Steps>
+
+## Using ABP Capabilities
+
+### Using `abp_call` (Recommended)
+
+`abp_call` is the primary tool for executing any capability. It works regardless of whether dynamic tools are available.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `capability` | string | Yes | ABP capability name in dot notation exactly as listed by `abp_connect` or `abp_status` (e.g., `convert.markdownToHtml`) |
+| `params` | object | No | Parameters for the capability. Defaults to `{}`. Check `abp_connect` or `abp_status` output for required params and types. |
+
+**Example -- convert markdown to HTML:**
+
+```json
+{
+  "capability": "convert.markdownToHtml",
+  "params": {
+    "markdown": "# Hello World\n\nThis is **bold** text."
+  }
+}
+```
+
+**Response format:** All results are saved to a file and the file path is returned. Read the file if you need to inspect the output.
+
+### Example: Convert Markdown to HTML
+
+```
+You: Use abp_call to convert this markdown to HTML:
+     capability: "convert.markdownToHtml"
+     params: { "markdown": "# Hello World\n\nThis is **bold** and this is *italic*." }
+```
+
+**What happens:**
+1. Claude Code calls `abp_call`
+2. Bridge calls `window.abp.call('convert.markdownToHtml', { markdown: "..." })`
+3. App processes the markdown
+4. Bridge returns the HTML result
+5. Claude Code sees the output
+
+### Example: Generate PDF
+
+```
+You: Use abp_call to generate a PDF from this HTML:
+     capability: "export.pdf"
+     params: { "html": "<h1>Invoice</h1><p>Total: $1,234.56</p>" }
+```
+
+**What happens:**
+1. Bridge calls the PDF capability
+2. App generates PDF (may take a few seconds)
+3. Bridge saves PDF to a file (automatically, because it's binary)
+4. Claude Code receives a file path like `/tmp/abp-mcp-bridge/export_pdf_1707234567890.pdf`
+
+Large outputs are **automatically saved to files** to avoid context bloat.
+
+### Example: Check Status
+
+```
+You: Use abp_status to check the current connection
+```
+
+**Response:**
+```json
+{
+  "connected": true,
+  "url": "https://markdown-converter.example.com",
+  "sessionId": "session-abc-123",
+  "capabilities": [
+    "convert.markdownToHtml",
+    "export.pdf",
+    "export.image"
+  ]
+}
+```
+
+### Example: Disconnect
+
+```
+You: Use abp_disconnect to close the connection
+```
+
+**What happens:**
+1. Bridge calls `window.abp.shutdown()`
+2. Browser closes
+3. Dynamic tools disappear
+4. Back to static tools only
+
+## Configuration Options
+
+### Headful Mode
+
+By default, the bridge uses headless mode. Set `ABP_HEADLESS=false` for headful (visible browser) when you need:
+- User sessions (needs user's profile)
+- GPU/WebGL (requires hardware access)
+- Permission prompts (needs a user to click "Allow")
+- Visual debugging
+
+Most capabilities work fine in headless mode. PDF generation uses `abp_render_to_pdf` which works in both modes.
+
+### Environment Variables
+
+The bridge supports these environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ABP_OUTPUT_DIR` | `<os.tmpdir()>/abp-mcp-bridge` | Directory where output files (PDFs, images, JSON results) are saved. Created automatically. |
+| `ABP_HEADLESS` | `true` | Set to `false` for headful (visible) mode. Headful is needed for capabilities requiring a visible browser window (authenticated sessions, GPU, permissions). |
+| `ABP_BROWSER_TIMEOUT` | `30000` | Timeout in milliseconds for browser launch and page navigation. |
+| `ABP_CALL_TIMEOUT` | `60000` | Default timeout in milliseconds for individual capability calls. |
+| `ABP_DOWNLOAD_TIMEOUT` | `30000` | Maximum time in milliseconds to wait for browser-initiated downloads. |
+| `ABP_LOG_LEVEL` | `info` | Minimum log level. One of: `debug`, `info`, `warn`, `error`. All logs go to stderr. |
+
+**Example:**
+```json
+{
+  "mcpServers": {
+    "abp": {
+      "command": "node",
+      "args": ["/path/to/build/index.js"],
+      "env": {
+        "ABP_OUTPUT_DIR": "/Users/alice/abp-outputs",
+        "ABP_LOG_LEVEL": "debug"
+      }
+    }
+  }
+}
+```
+
+## Troubleshooting
+
+### Browser Doesn't Launch
+
+**Symptom:** `abp_connect` fails with "Failed to launch browser"
+
+**Solutions:**
+1. Check Chrome/Chromium is installed:
+   ```bash
+   which google-chrome
+   which chromium
+   ```
+2. Puppeteer should auto-install Chrome. If not:
+   ```bash
+   cd abp-mcp-bridge
+   npx puppeteer browsers install chrome
+   ```
+3. Check permissions (macOS may block automated browsers):
+   - System Settings -> Privacy & Security -> Automation
+   - Allow Terminal/your IDE to control Chrome
+
+### Connection Fails
+
+**Symptom:** `abp_connect` returns "No ABP manifest found"
+
+**Cause:** The app doesn't support ABP or the manifest link is missing.
+
+**Solutions:**
+1. Verify the URL is correct
+2. Check the app's HTML has:
+   ```html
+   <link rel="abp-manifest" href="/abp.json">
+   ```
+3. Manually fetch the manifest:
+   ```bash
+   curl https://app.example.com/abp.json
+   ```
+
+### Tools Don't Appear After Connection
+
+**Symptom:** `abp_connect` succeeds but no dynamic tools appear
+
+**Cause:** Session initialization failed or no capabilities are available.
+
+**Solutions:**
+1. Check `abp_status()` -- is `connected: true`?
+2. Look at the terminal running Claude Code for error messages
+3. Enable debug logging:
+   ```json
+   "env": { "ABP_LOG_LEVEL": "debug" }
+   ```
+4. Check browser console (in the visible Chrome window)
+
+### Large Outputs Not Saved
+
+**Symptom:** Binary data returned inline instead of as a file
+
+**Cause:** Output routing rules may need adjustment.
+
+**Solutions:**
+1. Check output directory exists and is writable:
+   ```bash
+   ls -la /tmp
+   ```
+2. Set custom output directory:
+   ```json
+   "env": { "ABP_OUTPUT_DIR": "/Users/alice/abp-outputs" }
+   ```
+3. Check file was created:
+   ```bash
+   ls -la /tmp/output-*.pdf
+   ```
+
+### Capabilities Fail with Permission Errors
+
+**Symptom:** A capability returns "Permission denied"
+
+**Cause:** Browser lacks necessary permissions (usually in headless mode).
+
+**Solutions:**
+1. Use headful mode (default)
+2. Ensure the browser window has focus
+3. Check browser permissions:
+   - Chrome -> Settings -> Privacy and security -> Site Settings -> Permissions
+
+### Browser Crashes or Freezes
+
+**Symptom:** Browser window becomes unresponsive
+
+**Solutions:**
+1. Disconnect and reconnect:
+   ```
+   abp_disconnect()
+   abp_connect(url)
+   ```
+2. Restart Claude Code
+3. Check system resources (RAM, CPU)
+4. Reduce concurrent operations
+
+### Logs Not Visible
+
+**Symptom:** Can't see what the bridge is doing
+
+**Solutions:**
+1. Check stderr (where MCP servers log):
+   - In Claude Code, logs appear in the debug console
+2. Enable debug logging:
+   ```json
+   "env": { "ABP_LOG_LEVEL": "debug" }
+   ```
+3. Run the bridge manually for testing:
+   ```bash
+   node build/index.js
+   # Type JSON-RPC requests manually
+   ```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Building ABP Web Apps" icon="code" href="/guides/building-web-apps">
+    Build your own ABP-compatible app
+  </Card>
+  <Card title="MCP Bridge Architecture" icon="gears" href="/guides/mcp-bridge-architecture">
+    Understand the bridge internals
+  </Card>
+  <Card title="Data Flow" icon="arrows-turn-to-dots" href="/concepts/data-flow">
+    Understand the data routing logic
+  </Card>
+  <Card title="Protocol Overview" icon="book" href="/concepts/protocol-overview">
+    Full ABP specification
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Troubleshooting](/guides/troubleshooting)

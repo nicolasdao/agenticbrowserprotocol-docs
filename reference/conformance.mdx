@@ -1,0 +1,267 @@
+---
+title: "Conformance Requirements"
+description: "Minimum requirements for ABP-compliant apps and clients"
+icon: "clipboard-check"
+---
+
+Minimum requirements for ABP-compliant apps and clients.
+
+## Overview
+
+This document defines the minimum requirements for ABP conformance. Use this as a checklist before implementing or shipping ABP support.
+
+**Key words:** The terms **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **MAY**, and **OPTIONAL** are defined in [RFC 2119](https://www.ietf.org/rfc/rfc2119.txt).
+
+In brief:
+- **MUST** / **REQUIRED** -- An absolute requirement. Implementations that fail this are non-conformant.
+- **SHOULD** / **RECOMMENDED** -- There may be valid reasons to ignore this in particular circumstances, but the implications must be understood.
+- **MAY** / **OPTIONAL** -- Truly optional. Implementations may or may not include this.
+
+## App Conformance
+
+### Required (MUST)
+
+An ABP-compliant web application **MUST**:
+
+<Steps>
+  <Step title="Serve a manifest link">
+    Include `<link rel="abp-manifest" href="...">` in the HTML `<head>`.
+    See [Discovery Guide](/concepts/discovery).
+  </Step>
+  <Step title="Serve a valid manifest">
+    A JSON file with `abp`, `app` (containing `id`, `name`, `version`), and `capabilities` fields.
+    See [Discovery Guide](/concepts/discovery#manifest-format).
+  </Step>
+  <Step title="Expose window.abp">
+    An object on the global `window` implementing the ABP interface.
+    See [API Reference](/reference/api).
+  </Step>
+  <Step title="Implement initialize()">
+    Accept agent identification and return session info with capabilities.
+    See [Protocol Overview](/concepts/protocol-overview#session-lifecycle).
+  </Step>
+  <Step title="Implement shutdown()">
+    Clean up session resources.
+    See [API Reference](/reference/api#shutdown).
+  </Step>
+  <Step title="Implement call()">
+    Execute capabilities and return `ABPResponse` with `success`, `data` or `error`.
+    See [API Reference](/reference/api#call).
+  </Step>
+  <Step title="Return actual data">
+    Every capability MUST produce its declared output in the `ABPResponse`. Capabilities MUST NOT return status messages describing side effects (e.g., "print dialog opened") instead of actual output.
+    See [Common Pitfalls: Status Messages](/guides/common-pitfalls#anti-pattern-status-messages-instead-of-data).
+  </Step>
+  <Step title="Never trigger native UI">
+    Capabilities MUST NOT call `alert()`, `confirm()`, `prompt()`, `window.open()`, or trigger programmatic downloads. `window.print()` is allowed only as a transport signal for PDF generation.
+    See [Common Pitfalls: Native Browser UI](/guides/common-pitfalls#anti-pattern-native-browser-ui).
+  </Step>
+  <Step title="Handle deprecated capabilities">
+    Deprecated capabilities MUST remain functional for at least one major version before removal.
+    See [Capability Taxonomy](/concepts/capabilities#capability-lifecycle).
+  </Step>
+</Steps>
+
+### Recommended (SHOULD)
+
+An ABP-compliant web application **SHOULD**:
+
+1. **Implement `listCapabilities()`** and **`supports()`** for runtime discovery
+   - Allows agents to query capabilities dynamically
+   - See [API Reference](/reference/api#discovery-methods)
+
+2. **Support notifications** via `notify()` and `notifyProgress()`
+   - Enables real-time updates to agents
+   - See [Elicitation & Progress](/concepts/elicitation-and-progress)
+
+3. **Support elicitation** via `elicit()` for requesting input from agents
+   - Allows capabilities to ask for user preferences or confirmation
+   - See [Elicitation & Progress](/concepts/elicitation-and-progress#elicitation)
+
+4. **Validate inputs** against declared `inputSchema` before executing capabilities
+   - Prevents invalid data from causing errors
+   - See [Building ABP Apps: Parameter Validation](/guides/building-web-apps#pattern-parameter-validation)
+
+5. **Declare requirements** for permission-gated capabilities
+   - Lets agents know what conditions must be met
+   - See [Security Considerations](/concepts/security#permission-model)
+
+## Client Conformance
+
+### Required (MUST)
+
+An ABP-compliant client implementation **MUST**:
+
+<Steps>
+  <Step title="Discover apps">
+    Fetch HTML `<head>`, parse the `<link rel="abp-manifest">` tag, and fetch the manifest JSON.
+    See [Discovery Guide](/concepts/discovery).
+  </Step>
+  <Step title="Initialize sessions">
+    Call `window.abp.initialize()` with agent identification and feature flags.
+    See [Protocol Overview](/concepts/protocol-overview#initialize).
+  </Step>
+  <Step title="Call capabilities">
+    Use `window.abp.call()` and handle `ABPResponse` (check `success`, read `data` or `error`).
+    See [API Reference](/reference/api#call).
+  </Step>
+  <Step title="Shut down cleanly">
+    Call `window.abp.shutdown()` when done.
+    See [Protocol Overview](/concepts/protocol-overview#shutdown).
+  </Step>
+  <Step title="Use standard Puppeteer function names">
+    Client implementations using Puppeteer/Playwright MUST use these function names for interoperability: `__abp_notification`, `__abp_progress`, `__abp_elicitation`, `__abp_capabilities_changed`.
+    See [API Reference](/reference/api#puppeteer-callback-function-names).
+  </Step>
+  <Step title="Verify capabilities at runtime">
+    Clients MUST NOT trust manifest capabilities without runtime verification via `initialize()`.
+    See [Security Considerations](/concepts/security#5-manifest-security).
+  </Step>
+  <Step title="Never execute manifest-referenced code">
+    Clients MUST NOT execute code or scripts referenced in manifests.
+    See [Security Considerations](/concepts/security#5-manifest-security).
+  </Step>
+  <Step title="Never grant permissions from manifest alone">
+    Clients MUST NOT grant permissions based solely on manifest claims.
+    See [Security Considerations](/concepts/security#5-manifest-security).
+  </Step>
+</Steps>
+
+### Recommended (SHOULD)
+
+An ABP-compliant client implementation **SHOULD**:
+
+1. **Support both headless and headful browser modes** when using Puppeteer/Playwright
+   - Some capabilities require a visible browser (authenticated sessions, GPU, permissions)
+   - Default to headless; allow headful as an option
+   - See [Architecture Guide: Browser Requirements](/concepts/architecture#browser-requirements)
+
+2. **Handle notifications** -- Set up `page.exposeFunction()` for `__abp_notification` and `__abp_progress`
+   - See [Architecture Guide](/concepts/architecture#bidirectional-communication)
+
+3. **Handle elicitation** -- Set up `page.exposeFunction()` for `__abp_elicitation` to respond to app requests
+   - See [Elicitation & Progress](/concepts/elicitation-and-progress)
+
+4. **Handle binary data** -- Process `BinaryData` and `BinaryDataReference` responses
+   - See [Binary Data Protocol](/reference/binary-data)
+
+5. **Handle errors** -- Implement retry logic for retryable errors with exponential backoff
+   - See [Error Handling](/reference/error-handling)
+
+6. **Handle version mismatches gracefully** -- Agents SHOULD handle manifest protocol version mismatches according to the version compatibility rules
+   - See [Discovery Guide](/concepts/discovery#version-compatibility)
+
+## Verification
+
+### Verifying App Conformance
+
+**Manual test in browser console:**
+
+```javascript
+// 1. Check window.abp exists
+console.log(window.abp);  // Should be an object, not undefined
+
+// 2. Check required methods exist
+console.log(typeof window.abp.initialize);  // "function"
+console.log(typeof window.abp.shutdown);    // "function"
+console.log(typeof window.abp.call);        // "function"
+
+// 3. Test initialization
+const session = await window.abp.initialize({
+  agent: { name: 'test', version: '1.0' },
+  protocolVersion: '0.1',
+  features: { notifications: false, progress: false, elicitation: false }
+});
+console.log('Session:', session);  // Should have sessionId, app, capabilities
+
+// 4. Test capability call
+const result = await window.abp.call('convert.markdownToHtml', {
+  markdown: '# Hello ABP',
+  options: { sanitize: true }
+});
+console.log('Result:', result);  // Should have success: true, data: { ... }
+
+// 5. Verify data, not status message
+console.log('Has actual data?', result.data && typeof result.data === 'object');
+console.log('Not a status message?', !result.data?.status && !result.data?.message);
+
+// 6. Test shutdown
+await window.abp.shutdown();
+console.log('Shutdown complete');
+```
+
+**Automated test with MCP Bridge:**
+
+```bash
+# Connect to your app
+abp_connect("http://localhost:3000")
+
+# Should succeed and show available capabilities
+# Then test a capability:
+abp_call("convert.markdownToHtml", {"markdown": "# Test", "options": {"sanitize": true}})
+
+# Should return actual data, not a status message
+```
+
+### Verifying Client Conformance
+
+1. **Discovery test:**
+   ```javascript
+   const discovery = await discoverABP('https://app.example.com');
+   console.assert(discovery.supported === true);
+   console.assert(discovery.manifest.abp === '1.0');
+   ```
+
+2. **Session lifecycle test:**
+   ```javascript
+   const session = await client.connect('https://app.example.com');
+   console.assert(session.sessionId !== null);
+   console.assert(session.capabilities.length > 0);
+
+   await client.disconnect();
+   console.assert(session.sessionId === null);
+   ```
+
+3. **Capability call test:**
+   ```javascript
+   const result = await client.call('convert.markdownToHtml', { markdown: '# Test' });
+   console.assert(result.success === true || result.error !== undefined);
+   ```
+
+## Common Conformance Failures
+
+### For Apps
+
+| Failure | Symptom | Fix |
+|---------|---------|-----|
+| No manifest link | Discovery fails | Add `<link rel="abp-manifest" href="/abp.json">` to `<head>` |
+| Invalid manifest | "Invalid manifest structure" | Ensure `abp`, `app.id`, `app.name`, `app.version`, `capabilities` fields exist |
+| `window.abp` undefined | "window.abp not found" | Load ABP runtime before other scripts |
+| Status messages instead of data | Calls succeed but return useless output | Return actual data (see [Common Pitfalls](/guides/common-pitfalls#anti-pattern-status-messages-instead-of-data)) |
+| Native UI calls | Calls hang indefinitely | Remove `alert()`, `confirm()`, `prompt()` (see [Common Pitfalls](/guides/common-pitfalls#anti-pattern-native-browser-ui)) |
+
+### For Clients
+
+| Failure | Symptom | Fix |
+|---------|---------|-----|
+| Headless mode | Permission-gated capabilities fail | Use `headless: false` |
+| Not checking `success` flag | Crashes on error responses | Always check `if (result.success)` |
+| Not handling retryable errors | Gives up on transient failures | Check `error.retryable` and retry with backoff |
+| Large data through context | Agent performance degrades | Route large outputs to files (see [Data Flow](/concepts/data-flow)) |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Common Pitfalls" icon="triangle-exclamation" href="/guides/common-pitfalls">
+    Detailed anti-patterns to avoid
+  </Card>
+  <Card title="Building ABP Apps" icon="hammer" href="/guides/building-web-apps">
+    Build your first ABP app
+  </Card>
+  <Card title="Client-Side Implementation" icon="terminal" href="/reference/client-side">
+    Build a client implementation
+  </Card>
+  <Card title="Protocol Overview" icon="sitemap" href="/concepts/protocol-overview">
+    Full protocol specification
+  </Card>
+</CardGroup>

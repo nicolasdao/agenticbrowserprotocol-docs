@@ -1,0 +1,523 @@
+---
+title: "MCP Bridge Architecture"
+description: "How the ABP MCP Bridge reference implementation works"
+icon: "gears"
+---
+
+Deep dive into the ABP MCP Bridge reference implementation.
+
+## Overview
+
+The ABP MCP Bridge is a generic MCP server that connects AI agents to ABP-compliant web applications. It's the reference implementation demonstrating best practices for ABP client development.
+
+**Key Characteristics:**
+- Generic: Works with ANY ABP-compliant app
+- Zero configuration: Discovers capabilities automatically
+- Smart data flow: Routes large outputs to files
+- Complete: Implements all ABP features
+
+## Architecture
+
+```
++---------------------------------------------------------------------+
+|                    MCP BRIDGE ARCHITECTURE                           |
++---------------------------------------------------------------------+
+|                                                                     |
+|  Agent (Claude Code)                                                |
+|    |                                                                |
+|    | MCP stdio (JSON-RPC)                                           |
+|    v                                                                |
+|  +-----------------------------------------------------------+     |
+|  | MCP Server (server.ts)                                     |     |
+|  | - Handles MCP protocol                                     |     |
+|  | - Exposes tools                                            |     |
+|  +-------------------+---------------------------------------+     |
+|                      |                                              |
+|                      v                                              |
+|  +-----------------------------------------------------------+     |
+|  | ABP Bridge Manager                                         |     |
+|  | - Orchestrates components                                  |     |
+|  | - Manages tool lifecycle                                   |     |
+|  +--+--------+----------+-----------+----------+----------+--+     |
+|     |        |          |           |          |          |         |
+|     v        v          v           v          v          v         |
+|  Browser  Session  Capability  DataFlow  Browser    ABPHandler      |
+|  Manager  Manager  Registry    Manager   EventGuard Wiring          |
+|                                                                     |
++---------------------------------------------------------------------+
+```
+
+## Core Components
+
+### 1. ABP Bridge Manager
+
+**File:** `src/bridge/ABPBridgeManager.ts`
+
+The orchestrator. It owns instances of the other bridge classes and coordinates the connect/disconnect/call flows. The constructor requires an MCP `Server` instance (for handler wiring to forward notifications/progress via `server.sendLoggingMessage()`).
+
+**Key Methods:**
+- `connect(url)` -- Runs the full web app connection sequence (steps 1-5, plus guard attach at 3.5 and handler wiring at 4.5)
+- `connectExtension(extensionPath, abpPage?)` -- Runs the Chrome extension connection sequence (see [Extension Connect Flow](#extension-connect-flow) below)
+- `disconnect()` -- Shuts down session, detaches guard, and closes browser
+- `callCapabilityByName(name, params)` -- Called by `abp_call` (looks up by dot-notation name)
+- `callCapability(toolName, params)` -- Called by dynamic tools (looks up by `abp_` prefixed name)
+- `state` -- Current connection state (status, url, app, session, capabilities, error)
+- `registeredCapabilities` -- Full list with manifest + runtime details
+- `onToolsChanged` -- Callback invoked when capabilities change (triggers `notifications/tools/list_changed`)
+
+During `executeCapability()`, the orchestrator:
+1. Checks page health via `guard.isPageAlive`
+2. Arms the guard to track side effects (`guard.armForCall()`)
+3. Executes the ABP call
+4. Checks if the response already has binary data (`dataFlow.hasBinaryResponse()`)
+5. If no binary data, checks the guard for intercepted outputs (print PDF, downloads)
+6. Falls through to normal DataFlowManager processing
+
+### 2. Browser Manager
+
+**File:** `src/bridge/BrowserManager.ts`
+
+Wraps Puppeteer. Handles browser lifecycle and provides the `page.evaluate()` bridge to the browser context.
+
+**Key Methods:**
+- `launch(options?)` -- Starts Chromium in headless mode (by default) with `--no-first-run`, `--disable-default-apps`, `--disable-popup-blocking`. When `options.extensionPath` is provided, adds `--load-extension` and `--disable-extensions-except` flags to load a Chrome extension.
+- `getExtensionId()` -- Polls `browser.targets()` for a `chrome-extension://` URL and extracts the 32-character extension ID. Uses 200ms polling interval with `browserTimeout` as deadline. Used during the extension connect flow.
+- `navigate(url)` -- Goes to the URL (HTTP or `chrome-extension://`), waits for `networkidle2`
+- `evaluate(fn, ...args)` -- Runs code in the browser context, with detection for detached frames and closed targets
+- `exposeFunction(name, fn)` -- Exposes a Node.js function to the browser (used for notifications/progress/elicitation)
+- `currentBrowser` -- Accessor for the `Browser` instance (used by `BrowserEventGuard` for permissions and CDP)
+- `currentPage` -- Accessor for the current `Page` instance
+- `close()` -- Closes the browser, handles errors gracefully
+- Listens for the browser `disconnected` event and resets state
+
+### 3. ABP Session Manager
+
+**File:** `src/bridge/ABPSessionManager.ts`
+
+The `window.abp` protocol layer. All interactions with the web app go through this class. Each method uses `page.evaluate()` to execute code in the browser context. Parameters are serialized and passed as arguments to `page.evaluate()` (they cross the Node.js/browser boundary).
+
+**Key Methods:**
+- `waitForABP(timeout)` -- Waits for `window.abp` to be defined on the page
+- `initialize()` -- Calls `window.abp.initialize()` with bridge identity and feature flags
+- `listCapabilities()` -- Calls `window.abp.listCapabilities()` for full capability details
+- `call(name, params)` -- Calls `window.abp.call()` with the capability name, params, and timeout
+- `shutdown()` -- Calls `window.abp.shutdown()` to end the session
+
+### 4. Capability Registry
+
+**File:** `src/bridge/CapabilityRegistry.ts`
+
+Tracks capabilities from two sources: the manifest (pre-flight) and the runtime (`listCapabilities()`).
+
+**Key Behaviors:**
+- Maintains a map of ABP capability name -> `RegisteredCapability` (which includes both manifest and runtime data)
+- Maintains a reverse map of MCP tool name -> ABP capability name
+- Naming convention: `convert.markdownToHtml` becomes `abp_convert_markdownToHtml` (dots replaced with underscores, prefixed with `abp_`)
+- When the runtime provides capabilities not in the manifest, they are added
+- When the runtime provides schemas that the manifest lacked, they are merged
+
+**Key Methods:**
+- `register(capabilities)` -- Register capabilities from manifest
+- `get(name)` -- Get capability details by ABP name
+- `getByToolName(toolName)` -- Get capability details by MCP tool name
+- `list()` -- List all capabilities
+
+### 5. Data Flow Manager
+
+**File:** `src/bridge/DataFlowManager.ts`
+
+Inspects ABP responses and decides how to return them. See [Data Flow](/concepts/data-flow) for the full routing logic.
+
+**Key Behaviors:**
+- Saves all successful results to files (the agent receives a file path and reads on demand)
+- Detects `BinaryData` objects by checking both binary MIME types and `encoding: 'base64'`
+- Scans one level deep into response data to find nested binary objects (with sibling properties collected as metadata)
+- Provides `hasBinaryResponse()` for quick binary detection without full processing (used by `ABPBridgeManager` to decide whether to check the guard)
+- Error responses are returned inline (small diagnostic text, not content)
+
+**Key Methods:**
+- `processResult(response, capabilityName)` -- Process capability output (always saves to file)
+- `hasBinaryResponse(response)` -- Quick check for binary data presence
+
+### 6. Browser Event Guard
+
+**File:** `src/bridge/BrowserEventGuard.ts`
+
+Intercepts browser-level side effects that would block agentic workflows -- compensating for ABP apps that trigger native browser UI instead of returning data programmatically. It has a two-phase design:
+
+**Persistent listeners** (set up once at connect time via `attach()`):
+- **Dialog auto-handling**: `alert` -> dismiss, `confirm` -> accept, `prompt` -> dismiss, `beforeunload` -> accept
+- **Page crash/close detection**: sets error flags, notifies the bridge via `onPageLost` callback
+- **Permission auto-granting**: auto-grants `notifications` via `browserContext.overridePermissions()`
+- **Download interception**: uses a CDP session (`Browser.setDownloadBehavior`) to intercept and track downloads to the output directory
+- **Print interception**: overrides `window.print()` with a no-op that sets a flag (`window.__abpPrintCalled`)
+
+**Per-call methods** (used around each capability call):
+- `armForCall()` -- Resets per-call tracking (print flag, dialog list, download tracker)
+- `collectInterceptedOutputs(capabilityName)` -- After the call, checks what happened:
+  - If `window.__abpPrintCalled` is true, generates a PDF via `page.pdf()` (with CDP `Page.printToPDF` fallback for headful mode)
+  - Collects completed downloads
+  - Reports handled dialogs as informational entries
+
+**Binary response priority**: if the ABP response already contains proper `BinaryData`, the guard's intercepted outputs are skipped entirely. Well-implemented apps are unaffected.
+
+See [Troubleshooting: Browser Issues](/guides/troubleshooting#browser-issues) for common browser event problems.
+
+### 7. ABP Handler Wiring
+
+**File:** `src/bridge/ABPHandlerWiring.ts`
+
+Wires the `NotificationHandler`, `ProgressHandler`, and `ElicitationHandler` to ABP runtime events. The 3-step process:
+
+1. Exposes Node-side handler callbacks into the browser via `page.exposeFunction()` (e.g., `__abpOnNotification`, `__abpOnProgress`, `__abpOnElicitation`)
+2. Registers them with the ABP runtime via `page.evaluate()` (e.g., `window.abp.onNotification(n => window.__abpOnNotification(n))`)
+3. Checks for existence of each ABP method before registering (defensive)
+
+Must be called **after** `session.initialize()` because the ABP runtime must be ready. The guard attaches **before** initialize to catch dialogs during init.
+
+## Tool System
+
+### Static Tools
+
+**File:** `src/tools/static-tools.ts`
+
+Always available:
+- `abp_connect(url | extensionPath | extensionId, abpPage?)` -- Connect to an ABP web app by URL, a Chrome extension by directory path, or a Chrome Web Store extension by ID. Provide exactly one of `url`, `extensionPath`, or `extensionId`. When `extensionId` is used, the bridge downloads the extension from the Chrome Web Store automatically.
+- `abp_disconnect()` -- Disconnect and cleanup
+- `abp_status()` -- Show connection status and capabilities
+- `abp_call(capability, params?)` -- Invoke any capability by name. All results are saved to files. This is the primary, reliable method for calling capabilities.
+- `abp_render_to_pdf(html, options?)` -- Render HTML to a PDF file using the browser. Requires an active connection.
+
+### Dynamic Tools
+
+**File:** `src/tools/dynamic-tool-factory.ts`
+
+Generated from capabilities after connection:
+- Capability `convert.markdownToHtml` -> Tool `abp_convert_markdownToHtml`
+- Capability `export.pdf` -> Tool `abp_export_pdf`
+
+**Factory process:**
+1. Fetch manifest
+2. Parse capabilities
+3. Generate MCP tool definitions
+4. Register tools with MCP server
+
+## Event Handling
+
+### Notifications
+
+**File:** `src/handlers/notification-handler.ts`
+
+Handles app -> agent notifications:
+- State changes
+- Capability changes
+- Errors
+
+### Progress
+
+**File:** `src/handlers/progress-handler.ts`
+
+Handles progress updates:
+- Displays progress to agent
+- Updates operation status
+
+### Elicitation
+
+**File:** `src/handlers/elicitation-handler.ts`
+
+Handles elicitation requests:
+- Prompts user for input
+- Returns user response to app
+
+## Browser Event Handling
+
+Some ABP apps trigger native browser UI (print dialogs, alert/confirm popups, permission prompts, file downloads) instead of returning data programmatically. This blocks agentic workflows because the agent has no way to interact with native browser chrome.
+
+The `BrowserEventGuard` intercepts these side effects and handles them automatically:
+
+| Event | How it's handled | Impact |
+|-------|-----------------|--------|
+| `alert()` dialog | Auto-dismissed | Prevents blocking |
+| `confirm()` dialog | Auto-accepted (non-destructive default) | Prevents blocking |
+| `prompt()` dialog | Auto-dismissed | Prevents blocking |
+| `beforeunload` dialog | Auto-accepted (allows navigation) | Prevents blocking |
+| Page crash | Sets error flag, notifies bridge | Clear error message instead of cryptic "Target closed" |
+| Page close | Sets error flag, notifies bridge | Clear error message on next `abp_call` |
+| Permission requests | Auto-grants notifications | Capabilities work without manual permission clicks |
+| Browser downloads | Intercepted via CDP, tracked to output directory | Downloaded files are captured and reported |
+| `window.print()` | Replaced with flag-setting no-op | Triggers PDF generation (see below) |
+
+### Print Interception and PDF Generation
+
+When an ABP app calls `window.print()` (common for "export to PDF" capabilities), the guard:
+
+1. The `window.print()` override (set up at connect time) sets `window.__abpPrintCalled = true` instead of opening the print dialog
+2. After the capability call returns, `collectInterceptedOutputs()` detects the flag
+3. Generates a real PDF using `page.pdf({ printBackground: true, format: 'A4' })` (headless mode) or CDP `Page.printToPDF` (headful fallback)
+4. Saves the PDF to the output directory and returns the file path
+
+The agent receives a file path to a real PDF instead of a useless status message like `"print_dialog_opened"`.
+
+**Priority rule:** if the ABP response already contains proper `BinaryData` (the app returned the PDF itself), the guard steps aside. Well-implemented apps are completely unaffected -- the guard only activates when the app fails to return binary data.
+
+See [Troubleshooting: Browser Issues](/guides/troubleshooting#browser-issues) for resolving common browser event problems.
+
+## Connection Lifecycle
+
+### What Happens During abp_connect
+
+The connect process has five sequential steps. If any step fails, all previous steps are rolled back (browser closed, registry cleared).
+
+```
+Step 1: Manifest discovery (no browser needed)
+  |  Fetch HTML <head> from the URL (streaming, max 50 KB)
+  |  Parse for <link rel="abp-manifest" href="...">
+  |  Fetch manifest JSON (10s timeout, 1 MB max)
+  |  Validate required fields: abp, app.id, app.name, app.version, capabilities[]
+  |  Load capabilities into the registry
+  v
+Step 2: Browser launch
+  |  Launch Chromium via Puppeteer (headless by default)
+  |  Navigate to the URL (waits for networkidle2)
+  v
+Step 3: ABP detection
+  |  Wait for window.abp to be defined (10s timeout)
+  |  If not found, throw error
+  v
+Step 3.5: Browser event guard attachment
+  |  Attach BrowserEventGuard to the page (before initialize, to catch dialogs during init)
+  |  Set up: dialog auto-handling, crash/close detection, permission auto-granting,
+  |    CDP download interception, window.print() override
+  v
+Step 4: Session initialization
+  |  Call window.abp.initialize() with:
+  |    agent: { name: "abp-mcp-bridge", version: "0.1.0" }
+  |    protocolVersion: "0.1"
+  |    features: { notifications: true, progress: true, elicitation: true }
+  |  Receive sessionId, app info, capability summaries
+  v
+Step 4.5: Handler wiring
+  |  Wire NotificationHandler, ProgressHandler, ElicitationHandler to ABP runtime
+  |  Uses page.exposeFunction() to bridge Node.js callbacks into browser context
+  |  Registers callbacks with window.abp.onNotification(), onProgress(), onElicitation()
+  v
+Step 5: Runtime capability discovery
+  |  Call window.abp.listCapabilities()
+  |  Merge runtime capability details (schemas, availability) into registry
+  |  Emit notifications/tools/list_changed for dynamic tool clients
+  v
+Done: status = "connected"
+```
+
+The bridge supports **one connection at a time**. Calling `abp_connect` while already connected automatically disconnects first.
+
+### Extension Connect Flow
+
+When `abp_connect` receives `extensionPath` or `extensionId` instead of `url`, it runs a different connect flow via `connectExtension()`. If `extensionId` is provided, the bridge first downloads the extension's CRX package from the Chrome Web Store, extracts it to a local cache directory, then proceeds as if `extensionPath` were given:
+
+```
+Step 1: Browser launch with extension
+  |  Launch Chromium with --load-extension and --disable-extensions-except flags
+  |  Extension loads its service worker and registers itself
+  v
+Step 2: Extension ID discovery
+  |  Poll browser.targets() every 200ms for a chrome-extension:// URL
+  |  Extract the 32-character extension ID from the target URL hostname
+  |  Timeout after browserTimeout (default 30s)
+  v
+Step 3: Navigate to ABP page
+  |  Navigate to chrome-extension://ID/abp-app.html (or custom abpPage)
+  |  Wait for networkidle2
+  v
+Step 4: ABP detection
+  |  Wait for window.abp to be defined (10s timeout)
+  v
+Step 4.5: Browser event guard attachment
+  |  Same as web app flow -- attach guard for dialogs, crashes, permissions
+  v
+Step 5: Session initialization
+  |  Call window.abp.initialize() -- same as web app flow
+  v
+Step 5.5: Handler wiring
+  |  Wire notification, progress, elicitation handlers -- same as web app flow
+  v
+Step 6: Runtime capability discovery
+  |  Call window.abp.listCapabilities() for full capability details
+  v
+Step 7: Build synthetic manifest
+  |  Construct ABPManifest from InitializeResult + runtime capabilities
+  |  (HTTP manifest discovery is skipped -- chrome-extension:// URLs can't be fetched from Node.js)
+  |  Load into registry, update from runtime
+  |  Emit notifications/tools/list_changed
+  v
+Done: status = "connected"
+```
+
+**Key differences from web app flow:**
+- No HTTP-based manifest discovery (Step 1 of web app flow is replaced by Steps 1-2)
+- Extension ID must be discovered from browser targets (it's dynamically assigned)
+- Manifest is synthesized from runtime data instead of fetched via HTTP
+- Steps 4-6 are identical to the web app flow -- `page.evaluate()` works the same on extension pages
+
+### What Happens During abp_disconnect
+
+```
+Step 1: Session shutdown
+  |  Call window.abp.shutdown()
+  |  (errors logged but don't block disconnect)
+  v
+Step 2: Guard detach
+  |  Remove all browser event listeners
+  |  Detach CDP session
+  v
+Step 3: Browser close
+  |  Close the Chromium browser
+  |  (errors logged but don't block disconnect)
+  v
+Step 4: State cleanup
+  |  Clear capability registry
+  |  Reset status to "disconnected"
+  |  Emit notifications/tools/list_changed
+  v
+Done
+```
+
+## Data Flow Example
+
+```
++----------------------------------------------------+
+|  Agent calls: abp_export_pdf(html: "...", ...)     |
++--------------------+-------------------------------+
+                     |
+                     v
++----------------------------------------------------+
+|  Bridge: ABPBridgeManager.callCapability()         |
++--------------------+-------------------------------+
+                     |
+                     v
++----------------------------------------------------+
+|  Browser: page.evaluate()                          |
+|  window.abp.call('export.pdf', { html: "..." })   |
++--------------------+-------------------------------+
+                     |
+                     v
++----------------------------------------------------+
+|  App returns:                                      |
+|  { success: true, data: {                          |
+|    pdf: "base64...", mimeType: "application/pdf"   |
+|  }}                                                |
++--------------------+-------------------------------+
+                     |
+                     v
++----------------------------------------------------+
+|  DataFlowManager: Detects binary data              |
+|  - Decodes Base64                                  |
+|  - Saves to /tmp/output-abc123.pdf                 |
++--------------------+-------------------------------+
+                     |
+                     v
++----------------------------------------------------+
+|  Returns to agent:                                 |
+|  { filePath: "/tmp/output-abc123.pdf" }            |
++----------------------------------------------------+
+```
+
+## Configuration
+
+Environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ABP_OUTPUT_DIR` | `<os.tmpdir()>/abp-mcp-bridge` | Directory where output files are saved. Created automatically. |
+| `ABP_HEADLESS` | `true` | Set to `false` for headful (visible) mode. Headful is needed for capabilities requiring a visible browser window (authenticated sessions, GPU, permissions). |
+| `ABP_BROWSER_TIMEOUT` | `30000` | Timeout in milliseconds for browser launch and page navigation. |
+| `ABP_CALL_TIMEOUT` | `60000` | Default timeout in milliseconds for individual capability calls. |
+| `ABP_DOWNLOAD_TIMEOUT` | `30000` | Maximum time in milliseconds to wait for browser-initiated downloads. |
+| `ABP_LOG_LEVEL` | `info` | Minimum log level. One of: `debug`, `info`, `warn`, `error`. All logs go to stderr. |
+
+## Logging
+
+All logs go to **stderr** (never stdout -- stdout is reserved for JSON-RPC). Each message is timestamped in ISO 8601 format:
+
+```
+[2026-02-06T19:26:00.000Z] [INFO] Starting ABP MCP Bridge server
+[2026-02-06T19:26:01.234Z] [INFO] Discovering ABP manifest from http://localhost:4765/app
+[2026-02-06T19:26:01.567Z] [INFO] Fetching manifest from http://localhost:4765/abp.json
+[2026-02-06T19:26:02.890Z] [INFO] Loaded 10 capabilities from manifest
+[2026-02-06T19:26:03.123Z] [INFO] Launching browser {"headless":true,"timeout":30000}
+[2026-02-06T19:26:05.456Z] [INFO] Navigating to http://localhost:4765/app
+[2026-02-06T19:26:06.789Z] [INFO] Initializing ABP session
+[2026-02-06T19:26:07.012Z] [INFO] ABP session initialized: abc-123
+[2026-02-06T19:26:07.345Z] [INFO] Calling capability: convert.markdownToHtml
+[2026-02-06T19:26:07.678Z] [INFO] Capability convert.markdownToHtml succeeded {"duration":120}
+```
+
+The logger supports four levels (`debug`, `info`, `warn`, `error`) controlled by `ABP_LOG_LEVEL`:
+- `debug` -- Verbose output including capability registration details, notification/progress events, and data flow decisions
+- `info` -- Standard operation: connections, capability calls, handled dialogs
+- `warn` -- Non-fatal issues: browser disconnect, session errors during shutdown
+- `error` -- Failures: capability errors, browser crashes
+
+```typescript
+import { createLogger } from './utils/logger.js';
+
+const logger = createLogger('BridgeManager');
+
+logger.info('Connected to app', { url, sessionId });
+logger.error('Failed to call capability', { capability, error });
+```
+
+## Error Handling
+
+The bridge implements:
+- Exponential backoff for retryable errors
+- Graceful degradation
+- Browser crash recovery
+- Session reconnection
+
+See [Error Handling Guide](/reference/error-handling) for details.
+
+## Testing
+
+Run the bridge:
+
+```bash
+cd abp-mcp-bridge
+npm install
+npm run build
+npm start
+# Expects JSON-RPC on stdin
+```
+
+## Limitations and Known Issues
+
+**One connection at a time.** The bridge supports a single browser/session. Connecting to a new app disconnects from the current one. There is no session pooling.
+
+**Headless by default.** The browser runs in headless mode by default. Some ABP capabilities (authenticated sessions, GPU/WebGPU, permissions prompts) may require a visible browser window. Set `ABP_HEADLESS=false` for headful mode when needed.
+
+**Dynamic tool registration is unreliable.** Claude Code does not reliably expose dynamically registered MCP tools to the LLM. The `abp_call` static tool is the reliable method. Dynamic tools are kept as a progressive enhancement for other MCP clients.
+
+**Elicitation is v1 (auto-respond).** When an ABP app requests input from the agent (elicitation), the bridge auto-responds with defaults or cancels. Full support for routing elicitation requests to the user via MCP sampling is planned for a future version.
+
+**Print override timing.** The `BrowserEventGuard` overrides `window.print()` via `page.evaluate()` after the page has loaded. If the app captures a reference to `window.print` during its initial script execution (before the guard attaches), the override won't intercept the call. The fix is to use `page.evaluateOnNewDocument()` -- this is tracked as a pending improvement.
+
+**Browser profile.** The bridge launches Chromium with a fresh profile each time. It does not reuse the user's existing browser profile, which means authenticated sessions (cookies, localStorage) from the user's regular browser are not available.
+
+See [Troubleshooting](/guides/troubleshooting#limitations-and-known-issues) for workarounds.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Flow" icon="arrows-turn-to-dots" href="/concepts/data-flow">
+    DataFlowManager routing logic
+  </Card>
+  <Card title="Error Handling" icon="circle-exclamation" href="/reference/error-handling">
+    Error codes and recovery strategies
+  </Card>
+  <Card title="Client-Side Implementation" icon="laptop-code" href="/reference/client-side">
+    Build your own client
+  </Card>
+  <Card title="MCP Bridge Quick Start" icon="bolt" href="/guides/mcp-bridge-quickstart">
+    Use the bridge
+  </Card>
+</CardGroup>

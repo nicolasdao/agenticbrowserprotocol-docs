@@ -1,0 +1,281 @@
+---
+title: "Error Handling"
+description: "Error codes, recovery strategies, and best practices"
+icon: "circle-exclamation"
+---
+
+Error codes, recovery strategies, and best practices for ABP error handling.
+
+## Error Response Format
+
+All ABP errors follow this structure:
+
+```typescript
+interface ABPError {
+  code: string;              // Machine-readable error code
+  message: string;           // Human-readable message
+  details?: unknown;         // Additional context
+  retryable: boolean;        // Can this operation be retried?
+  retryAfter?: number;       // Suggested retry delay in ms
+  alternatives?: string[];   // Alternative capabilities to try
+}
+```
+
+## Standard Error Codes
+
+### Session Errors
+
+| Code | Description | Retryable |
+|------|-------------|-----------|
+| `NOT_INITIALIZED` | Session not initialized, call `initialize()` first | Yes |
+| `ALREADY_INITIALIZED` | Session already initialized | No |
+| `SESSION_EXPIRED` | Session has expired | Yes (reinitialize) |
+| `SESSION_INVALID` | Session ID is not valid | Yes (reinitialize) |
+
+### Capability Errors
+
+| Code | Description | Retryable |
+|------|-------------|-----------|
+| `UNKNOWN_CAPABILITY` | Capability doesn't exist | No |
+| `CAPABILITY_UNAVAILABLE` | Capability exists but isn't available now | Depends |
+| `REQUIREMENT_NOT_MET` | Capability requirement not satisfied | Depends |
+| `PRECONDITION_FAILED` | Precondition for capability not met | Depends |
+
+### Parameter Errors
+
+| Code | Description | Retryable |
+|------|-------------|-----------|
+| `INVALID_PARAMS` | Parameters don't match schema | No |
+| `MISSING_PARAM` | Required parameter missing | No |
+| `INVALID_TYPE` | Parameter type mismatch | No |
+
+### Permission Errors
+
+| Code | Description | Retryable |
+|------|-------------|-----------|
+| `PERMISSION_DENIED` | User denied permission | Yes (after user grants) |
+| `PERMISSION_REQUIRED` | Permission required but not requested | Yes |
+
+### Execution Errors
+
+| Code | Description | Retryable |
+|------|-------------|-----------|
+| `OPERATION_FAILED` | Operation failed | Depends on cause |
+| `TIMEOUT` | Operation timed out | Yes |
+| `CANCELLED` | Operation was cancelled | No |
+| `RATE_LIMITED` | Too many requests | Yes (with backoff) |
+| `NOT_IMPLEMENTED` | Capability declared but not implemented | No |
+
+### System Errors
+
+| Code | Description | Retryable |
+|------|-------------|-----------|
+| `BROWSER_ERROR` | Browser API error | Depends |
+| `NOT_SUPPORTED` | Feature not supported | No |
+| `INTERNAL_ERROR` | Unexpected internal error | Maybe |
+
+### Transport Errors
+
+| Code | Description | Retryable |
+|------|-------------|-----------|
+| `TRANSPORT_ERROR` | Transport layer error | Depends |
+| `DISCONNECTED` | Connection to app lost | Yes (reconnect) |
+
+## MCP Bridge Error Handling
+
+When using the ABP MCP Bridge, errors are surfaced as structured MCP responses with `isError: true`. The bridge adds context-specific error information beyond what the ABP protocol itself defines.
+
+### Connection Errors
+
+| Error | Cause | What to do |
+|-------|-------|------------|
+| `url: Invalid url` | URL doesn't pass validation | Provide a full URL with protocol (e.g., `http://localhost:4765`) |
+| `Failed to fetch app page: HTTP 404` | App URL is wrong or app isn't running | Check the URL and ensure the app is running |
+| `No <link rel="abp-manifest"> found in page head` | Page exists but doesn't have an ABP manifest link | The app may not implement ABP |
+| `Manifest missing required field: abp` | Manifest JSON is malformed | Check the app's manifest file |
+| `window.abp not found after page load` | Page loaded but `window.abp` was never defined | The app may not implement ABP, or it takes too long to initialize |
+| `Browser launch timeout` | Puppeteer couldn't start Chromium in time | Increase `ABP_BROWSER_TIMEOUT` or check if Chrome is installed |
+
+### Capability Call Errors
+
+ABP apps return structured errors with error codes. The bridge forwards these with retryable flags:
+
+| Error code | Meaning | Retryable |
+|------------|---------|-----------|
+| `INVALID_PARAMS` | Parameters didn't match the capability's input schema | No -- check `abp_status` for required params |
+| `UNKNOWN_CAPABILITY` | Capability name doesn't exist | No -- check `abp_status` for available capabilities |
+| `CAPABILITY_UNAVAILABLE` | Capability exists but can't be used right now | Maybe -- check requirements |
+| `PERMISSION_DENIED` | Browser permission was denied | Yes -- may need user interaction in the browser |
+| `NOT_INITIALIZED` | Session expired or wasn't initialized | Yes -- reconnect with `abp_connect` |
+| `OPERATION_FAILED` | The operation failed during execution | Maybe |
+| `TIMEOUT` | Operation exceeded the timeout | Yes -- increase `ABP_CALL_TIMEOUT` |
+| `NOT_IMPLEMENTED` | Capability is declared but not implemented by the app | No |
+
+Error responses include the retryable flag: `"TIMEOUT: Operation timed out (retryable)"`.
+
+### Browser Errors
+
+The bridge detects browser context loss (detached frame, target closed, session closed) and surfaces clean error messages. If the browser disconnects unexpectedly, the bridge logs a warning and resets internal state. A new `abp_connect` call will launch a fresh browser.
+
+The `BrowserEventGuard` monitors for page crashes and page closures. If either occurs, the bridge status is set to `error` with a descriptive message, and subsequent `abp_call` attempts will return `"Browser page is no longer available — reconnect with abp_connect"` instead of cryptic "Target closed" errors.
+
+Dialogs (`alert`, `confirm`, `prompt`, `beforeunload`) are auto-handled by the guard so they never block capability execution. The guard logs every handled dialog for debugging (`ABP_LOG_LEVEL=info`).
+
+See [Troubleshooting](/guides/troubleshooting) for step-by-step resolution of common errors.
+
+## Error Handling Patterns
+
+### Client-Side (Agent/Bridge)
+
+```javascript
+async function callCapability(capability, params) {
+  try {
+    const result = await abp.call(capability, params);
+
+    if (result.success) {
+      return result.data;
+    }
+
+    // Handle error
+    const error = result.error;
+
+    if (error.retryable) {
+      // Retry with exponential backoff
+      const delay = error.retryAfter || 1000;
+      await sleep(delay);
+      return await callCapability(capability, params);
+    }
+
+    // Check for alternatives
+    if (error.alternatives && error.alternatives.length > 0) {
+      console.log(`Try alternative: ${error.alternatives[0]}`);
+    }
+
+    throw new Error(`Capability failed: ${error.message}`);
+  } catch (err) {
+    console.error('Failed to call capability:', err);
+    throw err;
+  }
+}
+```
+
+### App-Side (Implementation)
+
+```javascript
+async convertMarkdownToHtml({ markdown, options }) {
+  try {
+    // Attempt operation
+    const html = await renderMarkdown(markdown, options);
+
+    return {
+      success: true,
+      data: { html }
+    };
+  } catch (error) {
+    // Map browser errors to ABP error codes
+    let code = 'OPERATION_FAILED';
+    let retryable = false;
+
+    if (error.name === 'NotAllowedError') {
+      code = 'PERMISSION_DENIED';
+      retryable = true;
+    } else if (error.name === 'SecurityError') {
+      code = 'PERMISSION_REQUIRED';
+      retryable = true;
+    }
+
+    return {
+      success: false,
+      error: {
+        code,
+        message: error.message,
+        retryable
+      }
+    };
+  }
+}
+```
+
+### Graceful Degradation
+
+When a capability fails, the error response may include an `alternatives` array suggesting fallback capabilities. Use this to degrade gracefully:
+
+```javascript
+async function callWithFallback(capability, params) {
+  const result = await abp.call(capability, params);
+
+  if (result.success) {
+    return result.data;
+  }
+
+  const error = result.error;
+
+  // Try alternatives if available
+  if (error.alternatives && error.alternatives.length > 0) {
+    for (const alternative of error.alternatives) {
+      console.log(`Primary capability failed, trying alternative: ${alternative}`);
+      const fallback = await abp.call(alternative, params);
+
+      if (fallback.success) {
+        return fallback.data;
+      }
+    }
+  }
+
+  throw new Error(`Capability ${capability} failed with no viable alternatives: ${error.message}`);
+}
+```
+
+## Retry Strategies
+
+### Exponential Backoff
+
+```javascript
+async function callWithRetry(capability, params, maxRetries = 3) {
+  let lastError;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const result = await abp.call(capability, params);
+
+    if (result.success) {
+      return result.data;
+    }
+
+    lastError = result.error;
+
+    if (!lastError.retryable) {
+      throw new Error(`Not retryable: ${lastError.message}`);
+    }
+
+    // Exponential backoff: 1s, 2s, 4s
+    const delay = (lastError.retryAfter || 1000) * Math.pow(2, attempt);
+    console.log(`Retry ${attempt + 1}/${maxRetries} after ${delay}ms`);
+    await sleep(delay);
+  }
+
+  throw new Error(`Max retries exceeded: ${lastError.message}`);
+}
+```
+
+## Best Practices
+
+1. **Always check `success` flag:** Don't assume success
+2. **Respect `retryable` flag:** Don't retry non-retryable errors
+3. **Use exponential backoff:** Prevent overwhelming the app
+4. **Log errors:** Include error codes for debugging
+5. **Provide alternatives:** Suggest fallback capabilities
+6. **Handle gracefully:** Don't crash on capability errors
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Cancellation" icon="ban" href="/reference/cancellation">
+    Cancellation error handling
+  </Card>
+  <Card title="Examples & Tutorials" icon="code" href="/guides/examples">
+    Working code examples
+  </Card>
+  <Card title="API Reference" icon="book" href="/reference/api">
+    Full API specification
+  </Card>
+</CardGroup>
