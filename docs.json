@@ -1,0 +1,13 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Agentic Browser Protocol",
+  "colors": {
+    "primary": "#2AB673"
+  },
+  "navigation": {
+    "pages": [
+      "introduction"
+    ]
+  }
+}
